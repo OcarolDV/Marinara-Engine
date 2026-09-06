@@ -35,10 +35,14 @@ export const GM_VERB_TABLE_MAX_BYTES = 64 * 1024;
  *    2. The narration parsers — every bracket name the Engine matches back out of a finished turn.
  *       There are five. Two of them carry names nothing else does: the client tag parser
  *       (`packages/client/src/lib/game-tag-parser.ts`), whose set is wider than any reminder
- *       renders (`ambient`, `direction`, `music`, `element_attack`, …), and the client narration
- *       formatter (`packages/client/src/components/game/game-narration-format.ts`), the only source
- *       of `qte_bonus`/`qte_result`, which it renders as command badges mid-stream. The other
- *       three — the server's segment editor
+ *       renders (`ambient`, `direction`, `music`, `element_attack`, …) and the only source of
+ *       `party-chat`/`party-turn`, and the client narration formatter
+ *       (`packages/client/src/components/game/game-narration-format.ts`), the only source of
+ *       `qte_bonus`/`qte_result`, which it renders as command badges mid-stream. Which name is
+ *       unique to which source shifts as the list grows: `element_attack` held the tag parser's
+ *       half of that pin until the narration formatter — which matches it too — joined, so
+ *       uniqueness is re-audited whenever a source is added rather than assumed to survive.
+ *       The other three — the server's segment editor
  *       (`packages/server/src/services/game/segment-edits.ts`), the sidecar scene analyzer
  *       (`packages/server/src/services/sidecar/scene-analyzer.ts`) and the generate route's
  *       dialogue rewriter (`packages/server/src/routes/generate/generate-route-utils.ts`) — add no
@@ -54,7 +58,8 @@ export const GM_VERB_TABLE_MAX_BYTES = 64 * 1024;
  *  Case-folding is load-bearing: the reminder renders `[Note:`/`[Book:` capitalized and the shipped
  *  parse regex is case-insensitive, so a lowercase `note` verb would shadow the journal tag.
  *  `party-chat`/`party-turn` cannot collide anyway — a verb name may not contain a hyphen — and are
- *  kept so the pin matches its sources exactly. */
+ *  kept so the pin matches its sources exactly, which is also what leaves them free to serve as the
+ *  tag parser's canary. */
 export const RESERVED_GM_TAG_NAMES = Object.freeze([
   "action",
   "ambient",
@@ -109,20 +114,31 @@ const reservedGmTagNames = new Set<string>(RESERVED_GM_TAG_NAMES);
  *       (`encounterActive`, `internalAssistant`, `professorMariActive`, `imageGenConnectionId`,
  *       `authorNotes`), and sources 1 and 2 are structurally blind to all of it — a package
  *       squatting one of those namespaces could overwrite an Engine key from model output. It takes
- *       five sweeps to see them, because no single one covers the vocabulary: the object literal a
+ *       six sub-sources, because no single one covers the vocabulary: the object literal a
  *       `patchMetadata`/`updateMetadata` call passes; the object literal an updater callback
  *       RETURNS, a shape the Engine reaches for about as often as the first; the client's own
  *       `useUpdateChatMetadata()` mutation and its `onMetadataChange` prop, which PATCH chat
  *       metadata without going near `patchMetadata`; the `chatMetadata.key` / `chat.metadata.key`
- *       property reads; and property reads off a `parseChatMetadata(…)` result, the idiom the
- *       Engine actually uses most and the only one that reaches `scenario`.
+ *       property reads; property reads off a `parseChatMetadata(…)` result, the idiom the Engine
+ *       actually uses most and the only one that reaches `scenario`; and
+ *       `CHAT_PRESET_EXCLUDED_METADATA_KEYS` (`packages/shared/src/types/chat-preset.ts`), which is
+ *       not a sweep at all but the list the Engine already hand-maintains of the keys that belong
+ *       to a chat rather than to a reusable settings profile. That list is the only source that
+ *       reaches `spatialContext`, and it reaches it precisely because the five sweeps cannot.
  *  Plus `persona`, an engine namespace no current key happens to start with; it is floored
  *  explicitly rather than left to appear the day something claims it.
  *
- *  What the derivation CANNOT see, stated plainly: a patch call whose second argument is a variable
- *  or a helper's return value (`patchMetadata(id, hydratedMeta)`) writes keys no static sweep in
- *  this repository can read. There are eighteen such calls, and the regression pins that count, so
- *  a nineteenth fails until someone reads it by hand. Everything else here is derived. */
+ *  What the derivation CANNOT see, stated plainly, in two shapes. A patch call whose second
+ *  argument is a variable or a helper's return value (`patchMetadata(id, hydratedMeta)`) writes keys
+ *  no static sweep in this repository can read; there are eighteen such calls, and the regression
+ *  pins that count, so a nineteenth fails until someone reads it by hand. And a read that happens
+ *  INSIDE a helper, off a parameter rather than off a name a sweep recognizes, is interprocedural
+ *  and out of reach of every read arm here: `spatialContext` is written into chat metadata by the
+ *  hierarchical-maps package's own client through the metadata PATCH route, and read back by
+ *  `hasUsableHierarchicalWorldMap(current)` off a `patchMetadata` updater's parameter and by a
+ *  file-local `parseMetadata()` in the capability migration. Widening a sweep does not close that
+ *  shape; source 6 does, which is why a curated Engine list sits beside five derivations here.
+ *  Everything else is derived. */
 export const ENGINE_OWNED_METADATA_KEY_PREFIXES = Object.freeze([
   "active",
   "agent",
@@ -190,6 +206,7 @@ export const ENGINE_OWNED_METADATA_KEY_PREFIXES = Object.freeze([
   "selfie",
   "semantic",
   "show",
+  "spatial",
   "spotify",
   "sprite",
   "storyboard",

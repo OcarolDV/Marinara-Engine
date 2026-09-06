@@ -8,13 +8,19 @@
 //     cannot become shadowable by a package verb;
 //   - ENGINE_OWNED_METADATA_KEY_PREFIXES vs every top-level ChatMetadata key, every engine-owned
 //     *_METADATA_KEY constant, and every key that lives in the interface's index signature rather
-//     than in its declaration — read out of chat-metadata writes in all three of their shapes and
-//     reads in all three of theirs — so a new engine namespace cannot become squattable.
+//     than in its declaration — read out of chat-metadata writes in all three of their shapes, reads
+//     in all three of theirs, and the Engine's own curated list of per-chat keys, which is the only
+//     source that sees a key written and read entirely across function boundaries — so a new engine
+//     namespace cannot become squattable.
 // A pin re-derived from an extractor narrower than the vocabulary passes vacuously, so each
 // extractor is asserted to have found something first — a size floor, plus one canary per source
-// that no other source in the union can supply. Where a source has no such key, the extractor's own
-// behavior is pinned instead, on a synthetic input. The one thing no sweep here can read is a patch
-// call handed a variable; those are counted rather than ignored, and the count is pinned too.
+// that no other source in the union can supply. A canary is only load-bearing while it stays
+// unique, and uniqueness is a property of the whole union: adding a source can silently make an
+// existing canary vacuous, so every canary here is re-audited against the other sources whenever
+// one joins. Where a source has no such key, the extractor's own behavior is pinned instead, on a
+// synthetic input. Two things no sweep here can read: a patch call handed a variable, which is
+// counted rather than ignored with the count pinned; and a metadata read that happens inside a
+// helper, off a parameter, which is why a curated Engine list is one of the sources.
 //
 // The rest drives the schema itself — the effect/metadataKey split, the D1 key-ownership rules,
 // the per-argument caps, and the per-verb degradation — plus the fact that PR1a is inert: nothing
@@ -34,6 +40,7 @@ import {
   parseGmVerbTableWithCompat,
   RESERVED_GM_TAG_NAMES,
 } from "../../packages/shared/src/schemas/gm-verb-table.schema.js";
+import { CHAT_PRESET_EXCLUDED_METADATA_KEYS } from "../../packages/shared/src/types/chat-preset.js";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -80,7 +87,17 @@ const clientSourceFiles = readSourceFiles("packages/client/src");
 
 const groupOpeners = /(?:\((?:\?(?:[:!=]|<[=!]|<[A-Za-z_$][\w$]*>))?)*/y;
 const tagIdentifier = /[A-Za-z_][A-Za-z0-9_-]*/y;
-const tagAlternation = /:?\|/y;
+/** The `|` opening the next alternation branch, plus whatever regex noise sits between it and the
+ *  branch just read: a trailing group, a quantifier, a colon, or spaces on either side.
+ *  `\[(main|whisper(?::[^\]]+)?|thought)\]` names three tags, and a walk that stops at the group
+ *  finds two — a truncation that reads as a narrower pin rather than as a failure, which is why the
+ *  synthetic fixture below puts the group-carrying branch in the MIDDLE of its alternation. One
+ *  shape stays out of reach and is left that way: a branch name written with a backslash escape
+ *  (`be\-ta`) still ends the walk, because letting the IDENTIFIER span escapes makes it swallow a
+ *  closing `\]` and invent names like `party-turn]`. Every alternation branch in the five swept
+ *  parsers is a plain identifier (`main|side|extra|action|thought|whisper`, `music|sfx|bg|ambient`,
+ *  `Note|Book`), so the truncation is documented rather than papered over. */
+const tagAlternation = /(?:\((?:[^()\\]|\\.)*\)|[?*+]|:|\s)*\|\s*/y;
 
 /** Every bracket-tag name a parser matches, walking the alternation groups the dialogue tokens
  *  live in: `\[(main|side|extra|action|thought|whisper(?::…)?)\]` names six tags, and a scan that
@@ -129,10 +146,15 @@ for (const file of [
 // inside an alternation (`[main|side|whisper:Target|thought]`) that a `[name:` sweep cannot see —
 // and a shadowed name does its damage where the Engine parses it, not where it prints it.
 // Only two of the five carry a name no other source in the union supplies: the tag parser
-// (`element_attack`) and the narration formatter (`qte_bonus`/`qte_result`, rendered as command
-// badges mid-stream). The other three are swept for rot cover only — dropping one of them from
-// this list would leave the pin green today — so that a token that arrives in one of them first
-// cannot become shadowable before anyone notices.
+// (`party-chat`/`party-turn`) and the narration formatter (`qte_bonus`/`qte_result`, rendered as
+// command badges mid-stream). The other three are swept for rot cover only — dropping one of them
+// from this list would leave the pin green today — so that a token that arrives in one of them
+// first cannot become shadowable before anyone notices.
+// `GameNarration.tsx` matches the same dialogue-token header and the journal tags and is
+// deliberately NOT here: the walk below reads a CSS attribute selector ("[data-log-anchor-key]"),
+// a log prefix (`[game-tts]`) and two multi-word phrases (`[start the game]`, `[To the party]`) in
+// it as bracket names, so sweeping it would put four non-tags into RESERVED_GM_TAG_NAMES to buy
+// names the five above already hold. Rot cover is not worth widening what the constant claims to be.
 const parserTags = new Set<string>();
 for (const file of [
   "packages/client/src/lib/game-tag-parser.ts",
@@ -148,12 +170,20 @@ assert.ok(reminderTags.size >= 15, `the GM reminder sweep found only ${reminderT
 assert.ok(parserTags.size >= 25, `the tag-parser sweep found only ${parserTags.size} tags; the extractor broke`);
 // Canaries no other source in the union can supply, so losing one proves a source dropped out:
 // `reputation` only ever appears in the GM reminder, `whisper` in colon form only in the party
-// reminder, `element_attack` only in the client tag parser, the QTE pair only in the client
-// narration formatter, and `main`/`whisper` only inside a regex alternation, which is what the
-// narrow sweep this pin used to run could not read.
+// reminder, the party pair only in the client tag parser, the QTE pair only in the client narration
+// formatter, and `main`/`whisper` only inside a regex alternation, which is what the narrow sweep
+// this pin used to run could not read.
+// `element_attack` used to stand for the tag parser here and no longer can: the narration formatter
+// matches it too, so the assertion survived that source joining while the tag parser itself — the
+// widest of the five, and the sole supplier of the party pair — went unpinned. Uniqueness is a
+// property of the union, not of a source, so re-audit every canary below whenever a file is added
+// to either list above.
 assert.ok(reminderTags.has("reputation"), "the reminder sweep must still see [reputation:");
 assert.ok(reminderTags.has("whisper"), "the party-prompts reminder must still be part of the sweep");
-assert.ok(parserTags.has("element_attack"), "the parser sweep must still see [element_attack:");
+assert.ok(
+  parserTags.has("party-chat") && parserTags.has("party-turn"),
+  "the client tag parser must still be part of the sweep",
+);
 assert.ok(
   parserTags.has("qte_bonus") && parserTags.has("qte_result"),
   "the client narration formatter must still be part of the sweep",
@@ -162,18 +192,22 @@ assert.ok(
   parserTags.has("main") && parserTags.has("whisper"),
   "the alternation walk must still see the dialogue tokens",
 );
-// The walk's own behavior, on a synthetic source: a lookahead group, a plain group carrying an
-// alternation, a NAMED group carrying one, a string-literal bracket, and a `\w+` bracket that names
-// nothing. The lookahead and named branches need pinning here because no shipped parser depends on
-// either alone — `Note` and `Book` also appear as plain string literals, and nothing names a group
-// today — so a regression in either would otherwise be invisible.
+// The walk's own behavior, on a synthetic source: a lookahead group, a plain group whose MIDDLE
+// branch trails a nested group and a quantifier, a NAMED group spaced around its `|`, a
+// string-literal bracket, and a `\w+` bracket that names nothing. The lookahead and named branches
+// need pinning here because no shipped parser depends on either alone — `Note` and `Book` also
+// appear as plain string literals, and nothing names a group today — so a regression in either
+// would otherwise be invisible. `three` and `five` pin the widened alternation walk: put the
+// group-carrying branch LAST, as this fixture used to, and a walk that truncates at the group still
+// passes, which is how a truncating walk hid behind a green pin. Each name here is reachable one
+// way only, so no branch of the walk can be dropped without reddening this assertion.
 assert.deepEqual(
   [
     ...bracketTagNames(
-      String.raw`/\[(?!Note:|Book:)\w+:/ /\[(one|two(?::x)?)\]/ /\[(?<tag>four|five)\]/ "[three:" /\[\w+:/`,
+      String.raw`/\[(?!Note:|Book:)\w+:/ /\[(one|two(?::x)?|three)\]/ /\[(?<tag>four | five)\]/ "[six:" /\[\w+:/`,
     ),
   ].sort(),
-  ["book", "five", "four", "note", "one", "three", "two"],
+  ["book", "five", "four", "note", "one", "six", "three", "two"],
 );
 
 const reserved = new Set<string>(RESERVED_GM_TAG_NAMES);
@@ -450,8 +484,9 @@ function parseChatMetadataReadKeys(source: string): string[] {
 // failure this file exists to prevent. A package that squatted one of those namespaces could have
 // a state verb overwrite the Engine's own key from model output.
 //
-// It takes five sub-sources, because none of them sees the vocabulary alone: the two patch-argument
-// shapes, the client's own metadata mutation, and the two read idioms.
+// It takes six sub-sources, because none of them sees the vocabulary alone: the two patch-argument
+// shapes, the client's own metadata mutation, the two read idioms, and one list the Engine already
+// maintains by hand.
 let unreadableWriteCalls = 0;
 const unreadableWriteSites: string[] = [];
 for (const file of [...serverSourceFiles, ...sharedSourceFiles, ...clientSourceFiles]) {
@@ -473,14 +508,26 @@ for (const file of [...serverSourceFiles, ...sharedSourceFiles, ...clientSourceF
     for (const match of source.matchAll(pattern)) engineMetadataKeys.add(match[1]!);
   }
 }
+// Sub-source 6 — the keys the Engine already knows belong to a chat rather than to a reusable
+// settings profile. This one is a hand-maintained list rather than a sweep, and that is exactly why
+// it reaches what the five above cannot: `spatialContext` is written into chat metadata by the
+// hierarchical-maps package's own client through the metadata PATCH route, so no patch-call literal
+// in this repository names it, and the Engine reads it back off a `patchMetadata` updater's
+// `current` parameter handed to `hasUsableHierarchicalWorldMap()` (world-map-mode.ts) and off a
+// file-local `parseMetadata()` in the legacy capability chat migration. Both reads are
+// interprocedural, so no widening of the read arms above would have found it.
+for (const key of CHAT_PRESET_EXCLUDED_METADATA_KEYS) engineMetadataKeys.add(key);
+
 // One canary per sub-source, each a key no OTHER source in the union supplies, so dropping a source
 // reds this file instead of quietly narrowing the pin: `mariPermissionsMode` is only ever a written
 // patch literal, `customMusicFolder` only a client mutation payload, `scenario` only a
-// `parseChatMetadata` local read, `crossChatAwareness` only a `chatMeta.*` property read.
+// `parseChatMetadata` local read, `crossChatAwareness` only a `chatMeta.*` property read, and
+// `spatialContext` only the excluded-key list.
 assert.ok(engineMetadataKeys.has("mariPermissionsMode"), "the patchMetadata literal walk is part of the sweep");
 assert.ok(engineMetadataKeys.has("customMusicFolder"), "the client metadata-mutation sweep is part of the sweep");
 assert.ok(engineMetadataKeys.has("scenario"), "the parseChatMetadata read sweep is part of the sweep");
 assert.ok(engineMetadataKeys.has("crossChatAwareness"), "the chat-metadata property-read sweep is part of the sweep");
+assert.ok(engineMetadataKeys.has("spatialContext"), "the chat-preset excluded-key list is part of the sweep");
 // `encounterActive` is not a source canary but a reality check: it is the key whose namespace a
 // package called `encounter` would otherwise have been free to claim.
 assert.ok(engineMetadataKeys.has("encounterActive"), "the undeclared combat flag is part of the sweep");
@@ -530,10 +577,12 @@ assert.deepEqual(
   ).sort(),
   ["viaDirect", "viaLocal"],
 );
-// The honest boundary of the whole derivation: patch calls handed a variable or a helper's return
-// value. Their keys cannot be read from here at all, so the COUNT is pinned — a nineteenth fails
-// this regression until someone reads it by hand and either widens the walk above or adds the
-// namespace to ENGINE_OWNED_METADATA_KEY_PREFIXES. The docs state the same limit.
+// The honest boundary of the whole derivation, and the half of it that a count can express: patch
+// calls handed a variable or a helper's return value. Their keys cannot be read from here at all,
+// so the COUNT is pinned — a nineteenth fails this regression until someone reads it by hand and
+// either widens the walk above or adds the namespace to ENGINE_OWNED_METADATA_KEY_PREFIXES. The
+// other half — a read off a parameter inside a helper — has no count to pin, which is why sub-source
+// 6 exists rather than a sixth sweep. The docs state both limits.
 assert.equal(
   unreadableWriteCalls,
   18,

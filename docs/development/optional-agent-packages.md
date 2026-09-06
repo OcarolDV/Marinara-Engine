@@ -245,10 +245,16 @@ back out of a finished turn — the client tag parser and the client narration f
 server's segment editor, the sidecar scene analyzer, and the generate route's dialogue rewriter.
 Their vocabulary is wider than any reminder renders: it includes the dialogue tokens `main`,
 `side`, `extra`, `action`, `thought` and `whisper`, and the QTE pair `qte_bonus` / `qte_result`
-that only the narration formatter matches. It is pinned by regression, extractors included, so a
-new built-in tag cannot quietly become shadowable. That last group is why the pin is worth the
+that only the narration formatter matches. That last group is why the pin is worth the
 trouble: a verb named `whisper` would have `[whisper:Tam]` cut out of a dialogue line before the
-turn is saved, and the line would stop being a dialogue line for good. Ordinary-looking words are
+turn is saved, and the line would stop being a dialogue line for good. It is pinned by regression,
+extractors included: each parser that supplies a name no other one does — the tag parser's
+`party-chat` / `party-turn`, the formatter's QTE pair — has to keep supplying it, so a source
+dropping quietly out of the sweep fails the build rather than narrowing the pin, and the three that
+contribute nothing unique are swept anyway so that a tag arriving in one of them first is still
+caught. What the pin does not promise is completeness: a built-in tag added to a file outside the
+swept set, or spelled in a shape the extractor cannot read, would still be missed, so the set is
+widened when a new parser appears rather than trusted to stay closed. Ordinary-looking words are
 reserved for the same reason — `action`, `state`, `status` and `note` are all built-in tags — so a
 refusal on a plain verb name is usually this rule rather than a typo. The `description` is one line
 of 1–200 characters with no line breaks and no square brackets, because it is rendered verbatim as
@@ -319,26 +325,32 @@ Engine owns, or extend one at an uppercase boundary. That namespace list is deri
 top-level `ChatMetadata` key, from the Engine's own metadata key constants, and from the keys that
 live in the interface's index signature rather than in its declaration — `encounterActive`,
 `internalAssistant`, `imageGenConnectionId` and the rest of the Engine's undeclared chat metadata,
-which the first two sources cannot see at all. Reading that third group takes five sweeps, because
+which the first two sources cannot see at all. Reading that third group takes six sources, because
 the Engine writes and reads chat metadata in more shapes than one: the object a
 `patchMetadata`/`updateMetadata` call passes, the object an updater callback _returns_ (a shape
 used about as often as the first), the client's own `useUpdateChatMetadata()` mutation and its
 `onMetadataChange` prop (which never touch `patchMetadata` at all), the `chatMetadata.key` and
-`chat.metadata.key` property reads, and reads off a `parseChatMetadata(…)` result — the idiom the
-Engine uses most, and the only one that sees keys like `scenario`.
+`chat.metadata.key` property reads, reads off a `parseChatMetadata(…)` result — the idiom the
+Engine uses most, and the only one that sees keys like `scenario` — and, last, the list of per-chat
+metadata keys the Engine already maintains by hand for chat settings profiles, which is where keys
+that are written and read entirely across function boundaries turn up.
 
-All of that is pinned by regression, extractors included. One thing is deliberately outside it: a
-patch call handed a variable or a helper's return value (`patchMetadata(id, hydratedMeta)`) writes
-keys no static sweep can read. There are eighteen such calls today and the regression pins that
-number, so a nineteenth fails the build until someone reads it by hand — the derivation names its
-blind spot instead of claiming to have none. One entry in the list, `persona`, is a hand-added
-floor no sweep produces today. The third rule refuses whole packages,
-deliberately: `conversation-calls` normalizes to `conversationCalls`, and `conversationCalls` +
-`Enabled` is an existing Engine key, so that package cannot own chat metadata keys under its own
-id; `noodle` and `background` sit in the same position, the latter because `background` is an
-Engine chat-metadata key in its own right. Such a package can still declare event verbs, which own
-no key at all. Keys are flat and top-level because that is the shape a package's reconciler already
-reads.
+All of that is pinned by regression, extractors included. Two things are deliberately outside the
+sweeps. A patch call handed a variable or a helper's return value (`patchMetadata(id, hydratedMeta)`)
+writes keys no static sweep can read; there are eighteen such calls today and the regression pins
+that number, so a nineteenth fails the build until someone reads it by hand. And a read that happens
+_inside_ a helper, off a parameter, is interprocedural and out of reach of any read sweep — the
+shape `spatialContext` takes, written into chat metadata by the `hierarchical-maps` package's own
+client and read back through a helper and a file-local parse. That second gap is what the
+hand-maintained list closes, and it is why one of the six sources is a curated list rather than a
+derivation. The derivation names its blind spots instead of claiming to have none. One entry in the
+list, `persona`, is a hand-added floor no source produces today. The third rule refuses whole
+packages, deliberately: `conversation-calls` normalizes to `conversationCalls`, and
+`conversationCalls` + `Enabled` is an existing Engine key, so that package cannot own chat metadata
+keys under its own id; `noodle` and `background` sit in the same position, the latter because
+`background` is an Engine chat-metadata key in its own right. Such a package can still declare event
+verbs, which own no key at all. Keys are flat and top-level because that is the shape a package's
+reconciler already reads.
 
 Verbs run only for a package that holds the `chat-write` permission and is installed and ready.
 This is the Engine's first enforcement of that permission, and it widens what the permission means:
