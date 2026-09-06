@@ -240,13 +240,17 @@ A verb name is `[a-z][a-z0-9_]*`, at most 32 characters, and may not be one of t
 bracket tags. That check is case-folded, because the reminder renders `[Note:` and `[Book:`
 capitalized while the shipped parse regex is case-insensitive, so a lowercase `note` verb would
 shadow the journal tag. The reserved set is derived from every tag the GM and party reminders can
-render across all of their branches, and from every tag the Engine's own narration parsers match
-back out of a finished turn — the client tag parser and the server's segment editor, whose
-vocabulary is wider than any reminder renders and includes the dialogue tokens `main`, `side`,
-`extra`, `action`, `thought` and `whisper`. It is pinned by regression, extractors included, so a
+render across all of their branches, and from every tag the Engine's five narration parsers match
+back out of a finished turn — the client tag parser and the client narration formatter, the
+server's segment editor, the sidecar scene analyzer, and the generate route's dialogue rewriter.
+Their vocabulary is wider than any reminder renders: it includes the dialogue tokens `main`,
+`side`, `extra`, `action`, `thought` and `whisper`, and the QTE pair `qte_bonus` / `qte_result`
+that only the narration formatter matches. It is pinned by regression, extractors included, so a
 new built-in tag cannot quietly become shadowable. That last group is why the pin is worth the
 trouble: a verb named `whisper` would have `[whisper:Tam]` cut out of a dialogue line before the
-turn is saved, and the line would stop being a dialogue line for good. The `description` is one line
+turn is saved, and the line would stop being a dialogue line for good. Ordinary-looking words are
+reserved for the same reason — `action`, `state`, `status` and `note` are all built-in tags — so a
+refusal on a plain verb name is usually this rule rather than a typo. The `description` is one line
 of 1–200 characters with no line breaks and no square brackets, because it is rendered verbatim as
 the verb's line in the reminder's `COMMANDS:` block. A verb takes up to six arguments, each
 `{ name, type, enum?, maxLength?, optional? }`, named `[a-z][a-zA-Z0-9_]*` up to 32 characters —
@@ -315,8 +319,20 @@ Engine owns, or extend one at an uppercase boundary. That namespace list is deri
 top-level `ChatMetadata` key, from the Engine's own metadata key constants, and from the keys that
 live in the interface's index signature rather than in its declaration — `encounterActive`,
 `internalAssistant`, `imageGenConnectionId` and the rest of the Engine's undeclared chat metadata,
-which the first two sources cannot see at all. All three are pinned by regression; one entry,
-`persona`, is a hand-added floor no sweep produces today. The third rule refuses whole packages,
+which the first two sources cannot see at all. Reading that third group takes five sweeps, because
+the Engine writes and reads chat metadata in more shapes than one: the object a
+`patchMetadata`/`updateMetadata` call passes, the object an updater callback _returns_ (a shape
+used about as often as the first), the client's own `useUpdateChatMetadata()` mutation and its
+`onMetadataChange` prop (which never touch `patchMetadata` at all), the `chatMetadata.key` and
+`chat.metadata.key` property reads, and reads off a `parseChatMetadata(…)` result — the idiom the
+Engine uses most, and the only one that sees keys like `scenario`.
+
+All of that is pinned by regression, extractors included. One thing is deliberately outside it: a
+patch call handed a variable or a helper's return value (`patchMetadata(id, hydratedMeta)`) writes
+keys no static sweep can read. There are eighteen such calls today and the regression pins that
+number, so a nineteenth fails the build until someone reads it by hand — the derivation names its
+blind spot instead of claiming to have none. One entry in the list, `persona`, is a hand-added
+floor no sweep produces today. The third rule refuses whole packages,
 deliberately: `conversation-calls` normalizes to `conversationCalls`, and `conversationCalls` +
 `Enabled` is an existing Engine key, so that package cannot own chat metadata keys under its own
 id; `noodle` and `background` sit in the same position, the latter because `background` is an

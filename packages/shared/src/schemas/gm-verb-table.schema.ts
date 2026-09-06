@@ -32,11 +32,19 @@ export const GM_VERB_TABLE_MAX_BYTES = 64 * 1024;
  *       (`packages/server/src/services/game/gm-prompts.ts`) and the party/VN reminder
  *       (`party-prompts.ts`) can emit across all of their branches (`reputation`, `skill_check`,
  *       `state`, `whisper`, `[Note:`/`[Book:` and the rest).
- *    2. The narration parsers — every bracket name the Engine matches back out of a finished turn:
- *       the client parser (`packages/client/src/lib/game-tag-parser.ts`), whose vocabulary is wider
- *       than any reminder renders (`ambient`, `direction`, `music`, `element_attack`, …), and the
- *       server's segment editor (`packages/server/src/services/game/segment-edits.ts`).
- *  Both parsers spell the dialogue tokens as a regex alternation
+ *    2. The narration parsers — every bracket name the Engine matches back out of a finished turn.
+ *       There are five. Two of them carry names nothing else does: the client tag parser
+ *       (`packages/client/src/lib/game-tag-parser.ts`), whose set is wider than any reminder
+ *       renders (`ambient`, `direction`, `music`, `element_attack`, …), and the client narration
+ *       formatter (`packages/client/src/components/game/game-narration-format.ts`), the only source
+ *       of `qte_bonus`/`qte_result`, which it renders as command badges mid-stream. The other
+ *       three — the server's segment editor
+ *       (`packages/server/src/services/game/segment-edits.ts`), the sidecar scene analyzer
+ *       (`packages/server/src/services/sidecar/scene-analyzer.ts`) and the generate route's
+ *       dialogue rewriter (`packages/server/src/routes/generate/generate-route-utils.ts`) — add no
+ *       name the first two do not already yield today, and are swept so that a token arriving in
+ *       one of them first cannot become shadowable unnoticed.
+ *  The four that carry the dialogue tokens spell them as a regex alternation
  *  (`\[(main|side|extra|action|thought|whisper…)\]`), so the sweep walks alternation groups instead
  *  of reading one name per bracket. Those tokens are pinned from the parsers on purpose: the
  *  reminder renders them inside an alternation (`[main|side|whisper:Target|thought]`) that a
@@ -70,6 +78,8 @@ export const RESERVED_GM_TAG_NAMES = Object.freeze([
   "party_add",
   "party_change",
   "qte",
+  "qte_bonus",
+  "qte_result",
   "reputation",
   "session_end",
   "sfx",
@@ -95,20 +105,32 @@ const reservedGmTagNames = new Set<string>(RESERVED_GM_TAG_NAMES);
  *    2. every engine-owned `*_METADATA_KEY` constant in the server, reduced the same way — these
  *       are keys no interface declares (`metadataWriteOrdinals`, the write-ordinal mirror);
  *    3. the keys that live in the interface's `[key: string]: unknown` index signature instead of
- *       in its declaration — every key written through `patchMetadata`/`updateMetadata`, and every
- *       `chatMetadata.key` / `chat.metadata.key` read. A large share of the Engine's real chat
- *       metadata is undeclared this way (`encounterActive`, `internalAssistant`,
- *       `professorMariActive`, `imageGenConnectionId`, `authorNotes`), and sources 1 and 2 are
- *       structurally blind to all of it — a package squatting one of those namespaces could
- *       overwrite an Engine key from model output.
+ *       in its declaration. A large share of the Engine's real chat metadata is undeclared this way
+ *       (`encounterActive`, `internalAssistant`, `professorMariActive`, `imageGenConnectionId`,
+ *       `authorNotes`), and sources 1 and 2 are structurally blind to all of it — a package
+ *       squatting one of those namespaces could overwrite an Engine key from model output. It takes
+ *       five sweeps to see them, because no single one covers the vocabulary: the object literal a
+ *       `patchMetadata`/`updateMetadata` call passes; the object literal an updater callback
+ *       RETURNS, a shape the Engine reaches for about as often as the first; the client's own
+ *       `useUpdateChatMetadata()` mutation and its `onMetadataChange` prop, which PATCH chat
+ *       metadata without going near `patchMetadata`; the `chatMetadata.key` / `chat.metadata.key`
+ *       property reads; and property reads off a `parseChatMetadata(…)` result, the idiom the
+ *       Engine actually uses most and the only one that reaches `scenario`.
  *  Plus `persona`, an engine namespace no current key happens to start with; it is floored
- *  explicitly rather than left to appear the day something claims it. */
+ *  explicitly rather than left to appear the day something claims it.
+ *
+ *  What the derivation CANNOT see, stated plainly: a patch call whose second argument is a variable
+ *  or a helper's return value (`patchMetadata(id, hydratedMeta)`) writes keys no static sweep in
+ *  this repository can read. There are eighteen such calls, and the regression pins that count, so
+ *  a nineteenth fails until someone reads it by hand. Everything else here is derived. */
 export const ENGINE_OWNED_METADATA_KEY_PREFIXES = Object.freeze([
   "active",
   "agent",
   "applied",
+  "archived",
   "attach",
   "author",
+  "auto",
   "automatic",
   "autonomous",
   "background",
@@ -161,6 +183,7 @@ export const ENGINE_OWNED_METADATA_KEY_PREFIXES = Object.freeze([
   "prompt",
   "prose",
   "roleplay",
+  "scenario",
   "scene",
   "schedule",
   "scoped",
@@ -411,9 +434,11 @@ export type GmVerb = z.infer<typeof gmVerbSchema>;
 export type GmVerbTable = z.infer<typeof gmVerbTableSchema>;
 
 /** Envelope-only table shape, derived from the real schema so the two cannot drift: entries stay
- *  unparsed so one verb from a NEWER Engine cannot fail the whole table, and `.strip()` (not
- *  strict, not passthrough) so newer TOP-LEVEL fields neither reject the envelope nor leak into
- *  the result. Same shape as `parseCapabilityCatalogWithCompat`'s envelope, for the same reason. */
+ *  unparsed so one verb from a NEWER Engine cannot fail the whole table — within the cap, which
+ *  the envelope carries too, so a table of MORE than sixteen verbs is refused whole rather than
+ *  degrading per verb — and `.strip()` (not strict, not passthrough) so newer TOP-LEVEL fields
+ *  neither reject the envelope nor leak into the result. Same shape as
+ *  `parseCapabilityCatalogWithCompat`'s envelope, for the same reason. */
 const gmVerbTableEnvelopeSchema = z
   .object({ schemaVersion: z.literal(1), verbs: z.array(z.unknown()).min(1).max(16) })
   .strip();
