@@ -22,21 +22,33 @@ export const GM_VERB_TABLE_MAX_BYTES = 64 * 1024;
 
 /** Bracket-tag names the Engine already owns, case-folded, so a package verb can never shadow a
  *  built-in tag — the GM would emit one name for two consumers and the tag would be stripped by
- *  whichever path matched first.
+ *  whichever path matched first. `whisper` is the sharpest of them: a package verb by that name
+ *  would have `[whisper:Tam]` cut out of a dialogue line before save, and the line stops matching
+ *  the dialogue grammar for good.
  *
- *  Derived from two sources, both swept by `capability-gm-verbs.regression.ts` so the pin cannot
- *  rot silently:
- *    1. `packages/server/src/services/game/gm-prompts.ts` — every `[name:` the GM format reminder
- *       can render, across all of its conditional branches (`reputation`, `skill_check`, `state`,
- *       `[Note:`/`[Book:` and the rest).
- *    2. `packages/client/src/lib/game-tag-parser.ts` — the client's whole tag vocabulary, which is
- *       wider than the reminder ever renders (`ambient`, `direction`, `music`, `status`,
- *       `element_attack`, `party_add`, …).
+ *  Derived from two kinds of source, all of them swept by `capability-gm-verbs.regression.ts` so
+ *  the pin cannot rot silently:
+ *    1. The prompt renders — every `[name:` the GM format reminder
+ *       (`packages/server/src/services/game/gm-prompts.ts`) and the party/VN reminder
+ *       (`party-prompts.ts`) can emit across all of their branches (`reputation`, `skill_check`,
+ *       `state`, `whisper`, `[Note:`/`[Book:` and the rest).
+ *    2. The narration parsers — every bracket name the Engine matches back out of a finished turn:
+ *       the client parser (`packages/client/src/lib/game-tag-parser.ts`), whose vocabulary is wider
+ *       than any reminder renders (`ambient`, `direction`, `music`, `element_attack`, …), and the
+ *       server's segment editor (`packages/server/src/services/game/segment-edits.ts`).
+ *  Both parsers spell the dialogue tokens as a regex alternation
+ *  (`\[(main|side|extra|action|thought|whisper…)\]`), so the sweep walks alternation groups instead
+ *  of reading one name per bracket. Those tokens are pinned from the parsers on purpose: the
+ *  reminder renders them inside an alternation (`[main|side|whisper:Target|thought]`) that a
+ *  `[name:` scan cannot see, and a bare-bracket scan of a prompt file would collect the example
+ *  speaker names and expressions standing next to them. A shadowed name does its damage where the
+ *  Engine parses it, so that is where the pin is derived.
  *  Case-folding is load-bearing: the reminder renders `[Note:`/`[Book:` capitalized and the shipped
  *  parse regex is case-insensitive, so a lowercase `note` verb would shadow the journal tag.
  *  `party-chat`/`party-turn` cannot collide anyway — a verb name may not contain a hyphen — and are
  *  kept so the pin matches its sources exactly. */
 export const RESERVED_GM_TAG_NAMES = Object.freeze([
+  "action",
   "ambient",
   "bg",
   "book",
@@ -47,7 +59,9 @@ export const RESERVED_GM_TAG_NAMES = Object.freeze([
   "dice",
   "direction",
   "element_attack",
+  "extra",
   "inventory",
+  "main",
   "map_update",
   "music",
   "note",
@@ -59,10 +73,13 @@ export const RESERVED_GM_TAG_NAMES = Object.freeze([
   "reputation",
   "session_end",
   "sfx",
+  "side",
   "skill_check",
   "state",
   "status",
   "tag",
+  "thought",
+  "whisper",
   "widget",
 ] as const);
 
@@ -76,25 +93,39 @@ const reservedGmTagNames = new Set<string>(RESERVED_GM_TAG_NAMES);
  *    1. every top-level key of `ChatMetadata` (`packages/shared/src/types/chat.ts`), reduced to its
  *       leading lowercase run: `gameSetupConfig` → `game`, `lorebookTokenBudget` → `lorebook`;
  *    2. every engine-owned `*_METADATA_KEY` constant in the server, reduced the same way — these
- *       are keys no interface declares (`metadataWriteOrdinals`, the write-ordinal mirror).
- *  Plus `chat` and `persona`, engine namespaces that no current top-level key happens to start
- *  with; they are floored explicitly rather than left to appear the day something claims them. */
+ *       are keys no interface declares (`metadataWriteOrdinals`, the write-ordinal mirror);
+ *    3. the keys that live in the interface's `[key: string]: unknown` index signature instead of
+ *       in its declaration — every key written through `patchMetadata`/`updateMetadata`, and every
+ *       `chatMetadata.key` / `chat.metadata.key` read. A large share of the Engine's real chat
+ *       metadata is undeclared this way (`encounterActive`, `internalAssistant`,
+ *       `professorMariActive`, `imageGenConnectionId`, `authorNotes`), and sources 1 and 2 are
+ *       structurally blind to all of it — a package squatting one of those namespaces could
+ *       overwrite an Engine key from model output.
+ *  Plus `persona`, an engine namespace no current key happens to start with; it is floored
+ *  explicitly rather than left to appear the day something claims it. */
 export const ENGINE_OWNED_METADATA_KEY_PREFIXES = Object.freeze([
   "active",
   "agent",
   "applied",
   "attach",
+  "author",
   "automatic",
   "autonomous",
+  "background",
   "branch",
   "card",
   "character",
   "chat",
+  "context",
   "conversation",
+  "cross",
   "custom",
   "day",
   "discord",
+  "dm",
+  "embedding",
   "enable",
+  "encounter",
   "entry",
   "exclude",
   "excluded",
@@ -103,25 +134,31 @@ export const ENGINE_OWNED_METADATA_KEY_PREFIXES = Object.freeze([
   "force",
   "full",
   "game",
+  "generation",
   "group",
   "haptic",
   "hide",
   "illustrator",
+  "image",
   "impersonate",
   "import",
   "inactive",
   "intent",
+  "internal",
   "knowledge",
   "last",
   "lorebook",
   "macro",
   "manual",
+  "mari",
   "metadata",
   "narrative",
   "noodle",
   "past",
   "persona",
   "preset",
+  "professor",
+  "prompt",
   "prose",
   "roleplay",
   "scene",
@@ -136,6 +173,7 @@ export const ENGINE_OWNED_METADATA_KEY_PREFIXES = Object.freeze([
   "summary",
   "tags",
   "tracker",
+  "translate",
   "translation",
   "week",
 ] as const);
@@ -380,8 +418,15 @@ const gmVerbTableEnvelopeSchema = z
   .object({ schemaVersion: z.literal(1), verbs: z.array(z.unknown()).min(1).max(16) })
   .strip();
 
+/** What the tolerant parse yields: the document shape WITHOUT the schema's `min(1)` guarantee.
+ *  Every entry can drop — a table declared by the wrong package drops all of them — so this is a
+ *  separate name from `GmVerbTable` on purpose. A caller must check `verbs.length` rather than
+ *  reason off the one-verb minimum the validating schema enforces. */
+export type ParsedGmVerbTable = { schemaVersion: GmVerbTable["schemaVersion"]; verbs: GmVerb[] };
+
 export type GmVerbTableParseResult = {
-  table: GmVerbTable;
+  /** Possibly empty — see `ParsedGmVerbTable`. */
+  table: ParsedGmVerbTable;
   /** Verbs this Engine could not understand — a newer effect, a shape it cannot represent, or a
    *  declaration this Engine refuses. They are dropped rather than failing the table, so one bad
    *  verb never costs a package its whole vocabulary. */

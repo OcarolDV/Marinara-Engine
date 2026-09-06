@@ -133,7 +133,7 @@ mirror the generation's progress and failure so a package is never left waiting 
 `combatActive` after a failed generation. Like the 1.7/1.8 seams (and unlike the hard-gated
 1.10 `contributions.assets`), these props are delivered to every `game-surface` package
 regardless of the `capabilityApi` it declares — the 1.11 label marks when they appeared, so a
-package that _requires_ them declares 1.11 and older Engines refuse it cleanly.
+package that *requires* them declares 1.11 and older Engines refuse it cleanly.
 
 ### Capability API 1.12: spatial events for the owning Experience
 
@@ -180,7 +180,7 @@ handle also keeps raising its attention indicator for a pending scene-analysis, 
 or combat-generation retry. A player who expands the box by hand during a request keeps it
 open until the request drops. Like the 1.11/1.12 seams, this is a soft seam: the field is
 honored regardless of the declared `capabilityApi`, and the 1.13 label marks when it
-appeared, so a package that _requires_ it declares 1.13.
+appeared, so a package that *requires* it declares 1.13.
 
 ### Capability API 1.16: package-declared Game Master verbs
 
@@ -207,12 +207,16 @@ unguarded over `/api/capability-packages/<id>/assets/gm-verbs.json`, because the
 privileged-access check, so a verb table must never carry anything sensitive. Like the 1.11–1.13
 seams this is a soft seam: an older Engine sees an ordinary JSON asset and ignores it, so a package
 can ship a table without narrowing its install range — declare `capabilityApi` 1.16 only if your
-package _requires_ the verbs to run.
+package _requires_ the verbs to run, and not before the runtime ships: `supportedCapabilityApi` is
+still 1.15 today, so a package declaring 1.16 now is refused at install by every Engine there is.
 
 The document is `{ "schemaVersion": 1, "verbs": [ … ] }` with one to sixteen verbs. Each verb is
 strict: an unknown key inside one is a refusal, not a silent extra. Unknown fields beside
-`schemaVersion` and `verbs` are ignored instead, so a table written for a newer Engine still yields
-the verbs this one understands:
+`schemaVersion` and `verbs` are handled differently by the two surfaces, on purpose: the Engine's
+own read strips them, so a table written for a newer Engine still yields the verbs this one
+understands, while the shared document schema an authoring tool would validate against is strict and
+refuses them. Validating your table against the schema is therefore stricter than the Engine is at
+runtime, which is the direction you want while you are writing one:
 
 ```json
 {
@@ -235,17 +239,25 @@ the verbs this one understands:
 A verb name is `[a-z][a-z0-9_]*`, at most 32 characters, and may not be one of the Engine's own GM
 bracket tags. That check is case-folded, because the reminder renders `[Note:` and `[Book:`
 capitalized while the shipped parse regex is case-insensitive, so a lowercase `note` verb would
-shadow the journal tag. The reserved set is derived from every tag the GM format reminder can
-render across all of its branches and from the client tag parser's whole vocabulary — which is
-wider than the reminder ever renders — and it is pinned by regression so a new built-in tag cannot
-quietly become shadowable. The `description` is one line of 1–200 characters with no line breaks
-and no square brackets, because it is rendered verbatim as the verb's line in the reminder's
-`COMMANDS:` block. A verb takes up to six arguments, each `{ name, type, enum?, maxLength?,
-optional? }`; only a string argument may carry an `enum` (1–16 values), and a string argument
-_without_ an enum must declare `maxLength` (1–500), since the executor's scoped parse inherits no
-ceiling of its own and an uncapped free-text argument would invite a whole narration fragment into
-the package. Payloads are flat, single-line JSON — a nested `}` ends the tag match early — and one
-instance per verb name per message is parsed, so a repeated verb in one narration is applied once.
+shadow the journal tag. The reserved set is derived from every tag the GM and party reminders can
+render across all of their branches, and from every tag the Engine's own narration parsers match
+back out of a finished turn — the client tag parser and the server's segment editor, whose
+vocabulary is wider than any reminder renders and includes the dialogue tokens `main`, `side`,
+`extra`, `action`, `thought` and `whisper`. It is pinned by regression, extractors included, so a
+new built-in tag cannot quietly become shadowable. That last group is why the pin is worth the
+trouble: a verb named `whisper` would have `[whisper:Tam]` cut out of a dialogue line before the
+turn is saved, and the line would stop being a dialogue line for good. The `description` is one line
+of 1–200 characters with no line breaks and no square brackets, because it is rendered verbatim as
+the verb's line in the reminder's `COMMANDS:` block. A verb takes up to six arguments, each
+`{ name, type, enum?, maxLength?, optional? }`, named `[a-z][a-zA-Z0-9_]*` up to 32 characters —
+deliberately wider than a verb name, which allows no uppercase, because an argument name is a JSON
+key rather than a bracket tag. Only a string argument may carry an `enum` (1–16 values); a string
+argument _without_ an enum must declare `maxLength` (1–500), since the executor's scoped parse
+inherits no ceiling of its own and an uncapped free-text argument would invite a whole narration
+fragment into the package; and an argument carrying both an `enum` and a `maxLength` is refused,
+because the enum already bounds the value. Payloads are flat, single-line JSON — a nested `}` ends
+the tag match early — and one instance per verb name per message is parsed, so a repeated verb in
+one narration is applied once.
 
 Degradation is per verb. A verb this Engine cannot use — a newer `effect`, a shape it cannot
 represent, or a declaration it refuses outright such as a reserved name or a key that is not the
@@ -300,12 +312,17 @@ begins with the package's id normalized to camel case (`hierarchical-maps` → `
 it continues with a non-empty suffix starting at an uppercase boundary, which is what stops one
 package prefixing another's namespace; and the normalized id must not be a metadata namespace the
 Engine owns, or extend one at an uppercase boundary. That namespace list is derived from every
-top-level `ChatMetadata` key and from the Engine's own metadata key constants, and is pinned by
-regression rather than hand-maintained. The third rule refuses whole packages, deliberately:
-`conversation-calls` normalizes to `conversationCalls`, and `conversationCalls` + `Enabled` is an
-existing Engine key, so that package cannot own chat metadata keys under its own id; `noodle` sits
-in the same position. Such a package can still declare event verbs, which own no key at all. Keys
-are flat and top-level because that is the shape a package's reconciler already reads.
+top-level `ChatMetadata` key, from the Engine's own metadata key constants, and from the keys that
+live in the interface's index signature rather than in its declaration — `encounterActive`,
+`internalAssistant`, `imageGenConnectionId` and the rest of the Engine's undeclared chat metadata,
+which the first two sources cannot see at all. All three are pinned by regression; one entry,
+`persona`, is a hand-added floor no sweep produces today. The third rule refuses whole packages,
+deliberately: `conversation-calls` normalizes to `conversationCalls`, and `conversationCalls` +
+`Enabled` is an existing Engine key, so that package cannot own chat metadata keys under its own
+id; `noodle` and `background` sit in the same position, the latter because `background` is an
+Engine chat-metadata key in its own right. Such a package can still declare event verbs, which own
+no key at all. Keys are flat and top-level because that is the shape a package's reconciler already
+reads.
 
 Verbs run only for a package that holds the `chat-write` permission and is installed and ready.
 This is the Engine's first enforcement of that permission, and it widens what the permission means:
