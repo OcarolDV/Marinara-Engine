@@ -41,8 +41,9 @@ export interface ParsedDiceNotation {
  * Parse NdM notation.
  *
  * Returns `null` when the text is not dice notation, when it asks for fewer
- * than one die or fewer than one face, or when a count, face or modifier value
- * is too large to be an exact integer.
+ * than one die or fewer than one face, when a count, face or modifier value is
+ * too large to be an exact integer, or when the range of totals the notation
+ * could roll would leave the exact integers at either end.
  *
  * Ceilings past that are each caller's policy, not the grammar's: this module
  * does not decide whether `500d6` is refused or clamped, because the shipped
@@ -66,6 +67,31 @@ export function parseDiceNotation(value: string): ParsedDiceNotation | null {
   const modifier = match[3] ? Number.parseInt(match[3], 10) : 0;
   if (!Number.isSafeInteger(count) || !Number.isSafeInteger(sides) || !Number.isSafeInteger(modifier)) return null;
   if (count < 1 || sides < 1) return null;
+
+  // Exact pieces are not enough. What every reader reports is the total, and the
+  // total is `sum(rolls) + modifier` added as floats. Each die shows at least 1
+  // and at most `sides`, so a throw lands somewhere in
+  // [modifier + count, modifier + count * sides], and the rule is that *both*
+  // ends of that range stay exact — which end a throw lands near is the RNG's
+  // business, not the parser's. "1d6+9007199254740991" is exact in every piece
+  // and still totals 2^53 the moment the die shows a 6.
+  //
+  // Only the high end needs a branch. The low end is the negative mirror, and it
+  // cannot leave the safe integers on its own: dice only ever add, so a negative
+  // modifier is pushed *toward* zero (modifier + count > modifier >= -(2^53-1)),
+  // and a positive modifier puts the low end under a high end that has already
+  // been checked. The asymmetry is the arithmetic's — "1d6-9007199254740991"
+  // stays legal while its positive twin no longer does. The low end is pinned in
+  // the regression as a property of every accepted notation rather than here as
+  // a branch no input can reach.
+  //
+  // `count * sides` is checked on its own first: past 2^53 the product itself
+  // rounds, and a rounded product carried into the sum can land a notation back
+  // inside the safe range and claim an exactness the true total does not have
+  // ("3d3002399751580331-1" is that shape).
+  const maxRollSum = count * sides;
+  if (!Number.isSafeInteger(maxRollSum)) return null;
+  if (!Number.isSafeInteger(modifier + maxRollSum)) return null;
 
   return {
     notation,

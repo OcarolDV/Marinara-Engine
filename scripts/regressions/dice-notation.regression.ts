@@ -69,6 +69,11 @@ const CASES: NotationCase[] = [
   { notation: "1d6+9007199254740992", grammar: false, tool: "invalid", tagRolls: [3], tagLabel: false },
   { notation: `1d6+${"9".repeat(49)}`, grammar: false, tool: "invalid", tagRolls: [3], tagLabel: false },
   { notation: `1d6-${"9".repeat(49)}`, grammar: false, tool: "invalid", tagRolls: [3], tagLabel: false },
+  // Exact in every piece and still refused: a six would put the total on 2^53.
+  // The largest 1d6 modifier that survives its own top throw sits six lower and
+  // is legal everywhere. Both ends of that boundary are swept in full below.
+  { notation: "1d6+9007199254740991", grammar: false, tool: "invalid", tagRolls: [3], tagLabel: false },
+  { notation: "1d6+9007199254740985", grammar: true, tool: "rolled", tagRolls: [3], tagLabel: false },
 ];
 
 // ── Entry 1: the shared grammar ──
@@ -137,15 +142,30 @@ async function rollThroughTool(notation: string): Promise<Record<string, unknown
   return JSON.parse(result.result) as Record<string, unknown>;
 }
 
-
-// The sum is the dice as thrown, never re-derived through the modifier: at the
-// safe-integer boundary, total - modifier floats one off from the die it rolled.
-// Forty throws so a single lucky exact subtraction cannot green a regression.
+// The sum the tool reports is the dice as thrown, and the total is exactly that
+// sum plus the modifier — asserted at the largest modifier a 1d6 may legally
+// carry, where the float arithmetic has the least room left.
+//
+// Honest note on the shape of this pin: it is a plain property assertion, not a
+// trap for a re-derivation. Now that the grammar refuses any notation whose
+// total range could leave the safe integers, `total - modifier` and a reduce
+// over the rolls agree exactly, so this cannot red a swap between them. The
+// reduce form is kept because summing the dice directly is what the property
+// says. Forty throws so the assertion sees more than one face of the die, and
+// BigInt is the arithmetic truth the float total is measured against.
+const LARGEST_1D6_MODIFIER = Number.MAX_SAFE_INTEGER - 6;
 for (let i = 0; i < 40; i++) {
-  const boundary = await rollThroughTool(`1d6+${Number.MAX_SAFE_INTEGER}`);
+  const boundary = await rollThroughTool(`1d6+${LARGEST_1D6_MODIFIER}`);
   const rolls = boundary.rolls as number[];
   assert.ok(Array.isArray(rolls) && rolls.length === 1, "the boundary roll throws one die");
   assert.equal(boundary.sum, rolls[0], "the reported sum is the die actually rolled");
+  assert.equal(boundary.modifier, LARGEST_1D6_MODIFIER, "the boundary modifier survives the round trip");
+  assert.ok(Number.isSafeInteger(boundary.total as number), "the boundary total is still an exact integer");
+  assert.equal(
+    BigInt(boundary.total as number),
+    BigInt(rolls[0]!) + BigInt(LARGEST_1D6_MODIFIER),
+    "the boundary total matches the arithmetic truth, not a rounded neighbour",
+  );
 }
 
 for (const testCase of CASES) {
@@ -246,7 +266,7 @@ assert.equal(parseRollsNotation("1d20+3")?.resolvedResult?.dice, "1d20");
 assert.equal(parseRollsNotation("1d100")?.resolvedResult, undefined, "only a d20 resolves without a dice label");
 assert.equal(parseRollsNotation("0d20")?.resolvedResult, undefined);
 
-// ── The modifier is held to the same exactness bar as the count and the faces ──
+// ── The whole range of totals is held to the same exactness bar as the dice ──
 //
 // The regex puts no ceiling on the modifier's digits. The count and the faces
 // have always been checked with Number.isSafeInteger; the modifier was not, so
@@ -256,37 +276,120 @@ assert.equal(parseRollsNotation("0d20")?.resolvedResult, undefined);
 // a 49-digit modifier totals to 1e+49, and a long enough one totals to Infinity
 // — which the roll_dice tool serializes to a null total for the model. The
 // refusal belongs in the grammar because no caller re-checks the parsed value.
+//
+// An exact modifier is not the whole bar, though. What every reader reports is
+// the total, and the total is sum(rolls) + modifier: the notation could land
+// anywhere in [modifier + count, modifier + count * sides], and which end it
+// lands near is the RNG's business. "1d6+9007199254740991" is exact in every
+// piece and still totals 2^53 the moment the die shows a 6, so the boundary is
+// the total range's, not the modifier's — the largest legal 1d6 modifier is
+// MAX_SAFE_INTEGER - 6.
+//
+// The negative direction is the same rule read from the other end, and it does
+// not mirror the positive one: dice only ever add, so a negative modifier is
+// pushed toward zero and its lowest total (modifier + count) cannot leave the
+// safe integers on its own. "1d6-9007199254740991" therefore stays legal while
+// its positive twin does not — the asymmetry is the arithmetic's.
 
 const FORTY_NINE_NINES = "9".repeat(49);
+/** A d20 tops out twenty above its modifier, so its boundary sits below 1d6's. */
+const LARGEST_1D20_MODIFIER = Number.MAX_SAFE_INTEGER - 20;
 
 interface ModifierCase {
   notation: string;
   accepted: boolean;
+  /**
+   * The same case written as a single d20 — the only shape the skill-check tag
+   * resolves. Spelled out per row rather than swapped in with a replace: the
+   * boundary moves with the dice, so a d6 row and a d20 row do not sit on the
+   * same side of the line at the same modifier.
+   */
+  tagNotation: string;
   note: string;
 }
 
 const MODIFIER_CASES: ModifierCase[] = [
-  { notation: `1d6+${Number.MAX_SAFE_INTEGER}`, accepted: true, note: "the largest exact modifier stays legal" },
-  { notation: `1d6-${Number.MAX_SAFE_INTEGER}`, accepted: true, note: "its negative mirror stays legal" },
-  { notation: `1d6+${Number.MAX_SAFE_INTEGER + 1}`, accepted: false, note: "one past the boundary" },
-  { notation: `1d6-${Number.MAX_SAFE_INTEGER + 1}`, accepted: false, note: "one past the boundary, negative" },
-  { notation: `1d6+${FORTY_NINE_NINES}`, accepted: false, note: "49 digits parses to an imprecise float" },
-  { notation: `1d6-${FORTY_NINE_NINES}`, accepted: false, note: "49 digits, negative" },
-  { notation: `1d6+${"9".repeat(400)}`, accepted: false, note: "long enough to parse as Infinity" },
+  {
+    notation: `1d6+${LARGEST_1D6_MODIFIER}`,
+    tagNotation: `1d20+${LARGEST_1D20_MODIFIER}`,
+    accepted: true,
+    note: "the largest modifier whose whole total range stays exact",
+  },
+  {
+    notation: `1d6+${LARGEST_1D6_MODIFIER + 1}`,
+    tagNotation: `1d20+${LARGEST_1D20_MODIFIER + 1}`,
+    accepted: false,
+    note: "one past it — the top face lands the total on 2^53",
+  },
+  {
+    notation: `1d6+${Number.MAX_SAFE_INTEGER}`,
+    tagNotation: `1d20+${Number.MAX_SAFE_INTEGER}`,
+    accepted: false,
+    note: "an exact modifier is not enough when every face overflows the total",
+  },
+  {
+    notation: `1d6-${Number.MAX_SAFE_INTEGER}`,
+    tagNotation: `1d20-${Number.MAX_SAFE_INTEGER}`,
+    accepted: true,
+    note: "the negative mirror stays legal — the dice push the total toward zero",
+  },
+  {
+    notation: `1d6+${Number.MAX_SAFE_INTEGER + 1}`,
+    tagNotation: `1d20+${Number.MAX_SAFE_INTEGER + 1}`,
+    accepted: false,
+    note: "one past the modifier's own exactness",
+  },
+  {
+    notation: `1d6-${Number.MAX_SAFE_INTEGER + 1}`,
+    tagNotation: `1d20-${Number.MAX_SAFE_INTEGER + 1}`,
+    accepted: false,
+    note: "one past the modifier's own exactness, negative",
+  },
+  {
+    notation: `1d6+${FORTY_NINE_NINES}`,
+    tagNotation: `1d20+${FORTY_NINE_NINES}`,
+    accepted: false,
+    note: "49 digits parses to an imprecise float",
+  },
+  {
+    notation: `1d6-${FORTY_NINE_NINES}`,
+    tagNotation: `1d20-${FORTY_NINE_NINES}`,
+    accepted: false,
+    note: "49 digits, negative",
+  },
+  {
+    notation: `1d6+${"9".repeat(400)}`,
+    tagNotation: `1d20+${"9".repeat(400)}`,
+    accepted: false,
+    note: "long enough to parse as Infinity",
+  },
 ];
 
-// The grammar itself.
+// The grammar itself. An accepted notation promises both ends of its own total
+// range, not just an exact modifier. The low end is a property assertion rather
+// than a branch in the parser — it cannot fail while a modifier is held to its
+// own exactness and count is at least one — so it lives here, where loosening
+// either of those guards would red it.
 for (const testCase of MODIFIER_CASES) {
   const parsed = parseDiceNotation(testCase.notation);
   assert.equal(parsed !== null, testCase.accepted, `shared grammar: ${testCase.note}`);
   assert.equal(sharedIsDiceNotation(testCase.notation), testCase.accepted);
   if (parsed) {
     assert.ok(Number.isSafeInteger(parsed.modifier), `an accepted modifier is always exact: ${testCase.note}`);
+    assert.ok(
+      Number.isSafeInteger(parsed.modifier + parsed.count),
+      `the lowest total an accepted notation can roll is exact: ${testCase.note}`,
+    );
+    assert.ok(
+      Number.isSafeInteger(parsed.modifier + parsed.count * parsed.sides),
+      `the highest total an accepted notation can roll is exact: ${testCase.note}`,
+    );
   }
 }
 
-// The /roll service. Its bounds policy clamps oversized dice, but an inexact
-// modifier is a grammar refusal, so it throws rather than clamping.
+// The /roll service. Its bounds policy clamps oversized dice, but a total range
+// that leaves the safe integers is a grammar refusal, so it throws rather than
+// clamping.
 for (const testCase of MODIFIER_CASES) {
   if (!testCase.accepted) {
     assert.throws(() => rollDice(testCase.notation), /Invalid dice notation/, `/roll must refuse: ${testCase.note}`);
@@ -294,7 +397,12 @@ for (const testCase of MODIFIER_CASES) {
   }
   const rolled = rollDice(testCase.notation);
   assert.ok(Number.isSafeInteger(rolled.modifier), `/roll reports an exact modifier: ${testCase.note}`);
-  assert.ok(Number.isFinite(rolled.total), `/roll reports a finite total: ${testCase.note}`);
+  assert.ok(Number.isSafeInteger(rolled.total), `/roll reports an exact total: ${testCase.note}`);
+  assert.equal(
+    BigInt(rolled.total),
+    rolled.rolls.reduce((sum, roll) => sum + BigInt(roll), BigInt(rolled.modifier)),
+    `/roll's total matches the arithmetic truth: ${testCase.note}`,
+  );
 }
 
 // The roll_dice tool. A refusal has to reach the model as a rejected notation;
@@ -303,29 +411,84 @@ for (const testCase of MODIFIER_CASES) {
   const result = await rollThroughTool(testCase.notation);
   if (!testCase.accepted) {
     assert.match(String(result.error), /^Invalid dice notation/, `roll_dice must refuse: ${testCase.note}`);
+    assert.ok(
+      typeof result.hint === "string" && result.hint.length > 0,
+      `a refused notation still carries its hint: ${testCase.note}`,
+    );
     assert.equal(result.total, undefined, `a refused notation reports no total: ${testCase.note}`);
     assert.equal(result.rolls, undefined, `a refused notation reports no dice: ${testCase.note}`);
     continue;
   }
+  const parsed = parseDiceNotation(testCase.notation)!;
   assert.equal(result.error, undefined, `roll_dice must accept: ${testCase.note}`);
-  assert.ok(Number.isFinite(result.total as number), `roll_dice reports a finite total: ${testCase.note}`);
-  assert.equal(result.modifier, parseDiceNotation(testCase.notation)!.modifier);
-  // `sum` is reconstructed as total - modifier, which rounds once the modifier
-  // approaches 2^53, so it is not pinned at this magnitude. Ordinary modifiers
-  // are covered by the CASES sweep above.
+  assert.ok(Number.isSafeInteger(result.total as number), `roll_dice reports an exact total: ${testCase.note}`);
+  assert.equal(result.modifier, parsed.modifier);
+  // Both formulas are pinned here now. `sum` used to be unpinnable at this
+  // magnitude because total - modifier rounded; with the total range itself held
+  // to the safe integers the two agree, so the tool has to report a sum that is
+  // the dice and a total that is that sum plus the modifier.
+  const rolls = result.rolls as number[];
+  assert.equal(
+    result.sum,
+    rolls.reduce((sum, roll) => sum + roll, 0),
+    `roll_dice's sum is the dice as thrown: ${testCase.note}`,
+  );
+  assert.equal(result.total, (result.sum as number) + parsed.modifier, `roll_dice's total closes: ${testCase.note}`);
+  assert.equal(
+    BigInt(result.total as number),
+    rolls.reduce((sum, roll) => sum + BigInt(roll), BigInt(parsed.modifier)),
+    `roll_dice's total matches the arithmetic truth: ${testCase.note}`,
+  );
 }
 
-// The GM skill-check tag. An unusable modifier must leave the check unresolved
-// — publishing a resolved result would put a number on the card that the GM
-// never rolled.
+// The GM skill-check tag. An unusable total must leave the check unresolved —
+// publishing a resolved result would put a number on the card that the GM never
+// rolled.
 for (const testCase of MODIFIER_CASES) {
-  const resolved = parseRollsNotation(testCase.notation.replace("1d6", "1d20"))?.resolvedResult;
+  const resolved = parseRollsNotation(testCase.tagNotation)?.resolvedResult;
   if (testCase.accepted) {
-    assert.equal(resolved?.dice, "1d20", `an exact modifier still resolves: ${testCase.note}`);
+    assert.equal(resolved?.dice, "1d20", `a usable total still resolves: ${testCase.note}`);
     continue;
   }
-  assert.equal(resolved, undefined, `an unusable modifier leaves the check unresolved: ${testCase.note}`);
+  assert.equal(resolved, undefined, `an unusable total leaves the check unresolved: ${testCase.note}`);
 }
+
+// ── The boundary moves with the dice, not with a constant ──
+//
+// Each shape's largest legal modifier is MAX_SAFE_INTEGER minus its own top
+// throw, because that top throw is what the total has to survive.
+for (const { dice, topThrow } of [
+  { dice: "1d6", topThrow: 6 },
+  { dice: "2d6", topThrow: 12 },
+  { dice: "d20", topThrow: 20 },
+  { dice: "100d1000", topThrow: 100_000 },
+]) {
+  const largest = Number.MAX_SAFE_INTEGER - topThrow;
+  const accepted = parseDiceNotation(`${dice}+${largest}`);
+  assert.ok(accepted, `${dice} accepts a modifier of MAX_SAFE_INTEGER - ${topThrow}`);
+  assert.equal(accepted.count * accepted.sides, topThrow, `${dice} tops out ${topThrow} above its modifier`);
+  assert.equal(BigInt(largest) + BigInt(topThrow), BigInt(Number.MAX_SAFE_INTEGER), "and that lands exactly on 2^53-1");
+  assert.equal(parseDiceNotation(`${dice}+${largest + 1}`), null, `${dice} refuses one past it`);
+  // Negative modifiers are bounded by their own exactness instead: from there
+  // the dice can only move the total toward zero.
+  assert.ok(parseDiceNotation(`${dice}-${Number.MAX_SAFE_INTEGER}`), `${dice} keeps its negative mirror`);
+  assert.equal(parseDiceNotation(`${dice}-${Number.MAX_SAFE_INTEGER + 1}`), null, `${dice} refuses past that mirror`);
+}
+
+// The count-times-sides product is checked before it is added to anything.
+// Past 2^53 the product rounds on its own, and a rounded product carried into
+// the sum claims an exactness the true total does not have: 3d3002399751580331
+// throws at most 2^53 + 1, which rounds to 2^53, and taking one off *that*
+// lands on MAX_SAFE_INTEGER while the honest maximum is 2^53.
+const ROUNDED_PRODUCT_NOTATION = "3d3002399751580331-1";
+assert.equal(3 * 3002399751580331, 9007199254740992, "the float product rounds down to 2^53");
+assert.equal(BigInt(3) * BigInt(3002399751580331), 9007199254740993n, "while the honest product is 2^53 + 1");
+assert.equal(-1 + 3 * 3002399751580331, Number.MAX_SAFE_INTEGER, "so the naive maximum total looks safe");
+assert.equal(parseDiceNotation(ROUNDED_PRODUCT_NOTATION), null, "the grammar refuses it on the product alone");
+assert.throws(() => rollDice(ROUNDED_PRODUCT_NOTATION), /Invalid dice notation/);
+const roundedProductResult = await rollThroughTool(ROUNDED_PRODUCT_NOTATION);
+assert.match(String(roundedProductResult.error), /^Invalid dice notation/);
+assert.equal(roundedProductResult.total, undefined, "and reports no total for it");
 
 // ── Entry 5: the client /roll slash command ──
 
@@ -345,11 +508,47 @@ async function rollThroughSlashCommand(notation: string) {
   return { result, posted: posted[0] };
 }
 
+interface SlashDiceRollResult {
+  notation: string;
+  rolls: number[];
+  modifier: number;
+  total: number;
+}
+
+function slashDiceRollResult(posted: { extra?: Record<string, unknown> } | undefined): SlashDiceRollResult {
+  assert.ok(posted, "a roll posts a narrator message");
+  const rolled = (posted.extra as { diceRollResult?: SlashDiceRollResult } | undefined)?.diceRollResult;
+  assert.ok(rolled, "and carries the roll on the message's extra metadata");
+  return rolled;
+}
+
 // The command still rolls what it always rolled.
 const slashOrdinary = await rollThroughSlashCommand("2d6+3");
 assert.equal(slashOrdinary.result.handled, true);
 assert.ok(slashOrdinary.posted, "an ordinary notation posts a narrator message");
 assert.match(slashOrdinary.posted.content, /^🎲 \*\*2d6\+3\*\* → \*\*\d+\*\*/);
+
+// A bare d20 through the client path. This is the notation the whole change is
+// about: the tool used to refuse it while the three other readers took it, so
+// the client's own narrator message and the metadata the dice card reads are
+// pinned here as well as the grammar.
+const slashBareD20 = await rollThroughSlashCommand("d20");
+assert.equal(slashBareD20.result.handled, true, "a bare d20 is handled by /roll");
+assert.equal(slashBareD20.result.feedback, undefined, "a bare d20 posts no error copy");
+assert.equal(slashBareD20.posted?.role, "narrator", "a bare d20 posts as the narrator");
+const bareD20Roll = slashDiceRollResult(slashBareD20.posted);
+assert.deepEqual(
+  Object.keys(bareD20Roll).sort(),
+  ["modifier", "notation", "rolls", "total"],
+  "the diceRollResult metadata keeps the shape the dice card reads",
+);
+assert.equal(bareD20Roll.notation, "d20", "the metadata keeps the notation as typed");
+assert.equal(bareD20Roll.rolls.length, 1, "a bare d20 throws exactly one die");
+assert.ok(bareD20Roll.rolls[0]! >= 1 && bareD20Roll.rolls[0]! <= 20, "and it lands on a d20 face");
+assert.equal(bareD20Roll.modifier, 0, "a bare d20 carries no modifier");
+assert.equal(bareD20Roll.total, bareD20Roll.rolls[0], "and its total is the die");
+// One die and no modifier means the message is the bare headline, no detail tail.
+assert.equal(slashBareD20.posted!.content, `🎲 **d20** → **${bareD20Roll.total}**`);
 
 for (const testCase of MODIFIER_CASES) {
   const { result, posted } = await rollThroughSlashCommand(testCase.notation);
@@ -360,10 +559,14 @@ for (const testCase of MODIFIER_CASES) {
     continue;
   }
   assert.equal(result.feedback, undefined, `an accepted notation needs no error copy: ${testCase.note}`);
-  assert.ok(posted, `an accepted notation posts a roll: ${testCase.note}`);
-  const rolled = (posted.extra as { diceRollResult: { modifier: number; total: number } }).diceRollResult;
+  const rolled = slashDiceRollResult(posted);
   assert.ok(Number.isSafeInteger(rolled.modifier), `/roll reports an exact modifier: ${testCase.note}`);
-  assert.ok(Number.isFinite(rolled.total), `/roll reports a finite total: ${testCase.note}`);
+  assert.ok(Number.isSafeInteger(rolled.total), `/roll reports an exact total: ${testCase.note}`);
+  assert.equal(
+    BigInt(rolled.total),
+    rolled.rolls.reduce((sum, roll) => sum + BigInt(roll), BigInt(rolled.modifier)),
+    `/roll's total matches the arithmetic truth: ${testCase.note}`,
+  );
 }
 
 process.stdout.write("Dice notation regression passed.\n");
