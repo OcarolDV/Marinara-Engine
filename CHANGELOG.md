@@ -4,7 +4,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
-- Dice notation is now read by one shared grammar everywhere instead of four private copies, so the `roll_dice` tool accepts a bare `d20` like the rest of the app already did.
+- Dice notation is now read by one shared grammar in the four places that read it as a command — the `roll_dice` tool, the server and client sides of `/roll`, and the GM skill-check tag — instead of four private copies, so `roll_dice` accepts a bare `d20` like the other three already did. A modifier too large to be an exact whole number is now rejected as invalid notation instead of producing a total that cannot be trusted. The `{{roll:XdY}}` macro and the dice-roll animation keep their own parsing and are unchanged.
 - Added a storage API that lets a downloaded capability package register and persist its own file tables, with strict table-name validation. No caller is wired to it yet.
 - Removed the unfinished Slurp creator-feed material from the Noodle guides.
 - Updated the timeout reference in `.env.example` to use Slurp consistently.
