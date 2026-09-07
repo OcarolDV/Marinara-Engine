@@ -1766,6 +1766,7 @@
 }
 
 .mari-editor-header--with-nav .mari-editor-navigation {
+  /* Density queries size the tabs; flex shrinking would truncate their labels. */
   flex: 0 0 auto;
 }
 
@@ -2620,7 +2621,7 @@
 
 /* Only the narrow layout moves controls below the identity. Desktop sections
    stay beside the name and avatar in the same single-row topbar. */
-@container (max-width: 55.999rem) {
+@container not (min-width: 56rem) {
   .mari-editor-navigation-tabs {
     display: none;
   }
