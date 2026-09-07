@@ -45,9 +45,48 @@ import { CHAT_PRESET_EXCLUDED_METADATA_KEYS } from "../../packages/shared/src/ty
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 
 /** Comments are stripped before every sweep below: a bracket tag inside a doc comment
- *  (`[some_tag: …]`, `"[tagPrefix:"`) is prose about the parser, not vocabulary it handles. */
+ *  (`[some_tag: …]`, `"[tagPrefix:"`) is prose about the parser, not vocabulary it handles.
+ *
+ *  The scan is string-aware because a regex cannot be. A plain block-comment pattern opens a comment
+ *  at the `/*` inside a string literal — `"image/*"`, the bot-browser route globs, the `Accept`
+ *  headers, sixty-seven of them across the files swept below — and then deletes everything through
+ *  to the next block-comment close, taking live source with it. That is precisely the failure this
+ *  file exists to catch: a sweep reading less than it claims to, and passing vacuously because what
+ *  it should have found went missing before it looked. Quoted literals are skipped rather than
+ *  parsed, and kept verbatim, because Pin 1 reads bracket tags out of string literals and the
+ *  metadata sweep strips them itself. A `'` or `"` literal ends at its own newline, as JavaScript's
+ *  does, so a quote inside a regex character class can at worst preserve a comment — which shows up
+ *  as an unpinned tag, loudly — and can never eat code. */
 function withoutComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
+  const opener = /["'`]|\/[/*]/g;
+  let out = "";
+  let index = 0;
+  for (;;) {
+    opener.lastIndex = index;
+    const hit = opener.exec(source);
+    if (!hit) break;
+    out += source.slice(index, hit.index);
+    if (hit[0] === "//") {
+      const end = source.indexOf("\n", hit.index);
+      index = end === -1 ? source.length : end;
+      continue;
+    }
+    if (hit[0] === "/*") {
+      const end = source.indexOf("*/", hit.index + 2);
+      index = end === -1 ? source.length : end + 2;
+      continue;
+    }
+    const quote = hit[0];
+    let end = hit.index + 1;
+    while (end < source.length && source[end] !== quote) {
+      if (source[end] === "\\") end += 1;
+      else if (source[end] === "\n" && quote !== "`") break;
+      end += 1;
+    }
+    out += source.slice(hit.index, end + 1);
+    index = end + 1;
+  }
+  return out + source.slice(index);
 }
 
 /** The chat-metadata route path, kept alive through the strip below. It carries no quote, brace,
@@ -94,25 +133,35 @@ const serverSourceFiles = readSourceFiles("packages/server/src");
 const sharedSourceFiles = readSourceFiles("packages/shared/src");
 const clientSourceFiles = readSourceFiles("packages/client/src");
 
-// ── Pin 1: reserved GM tag names ─────────────────────────────────────────────
+// ── The comment strip both pins read through ─────────────────────────────────
 
-const groupOpeners = /(?:\((?:\?(?:[:!=]|<[=!]|<[A-Za-z_$][\w$]*>))?)*/y;
-const tagIdentifier = /[A-Za-z_][A-Za-z0-9_-]*/y;
-/** The `|` opening the next alternation branch, plus whatever regex noise sits between it and the
- *  branch just read: a trailing group, a quantifier, a colon, or spaces on either side.
- *  `\[(main|whisper(?::[^\]]+)?|thought)\]` names three tags, and a walk that stops at the group
- *  finds two — a truncation that reads as a narrower pin rather than as a failure, which is why the
- *  synthetic fixture below puts the group-carrying branch in the MIDDLE of its alternation. THREE
- *  shapes stay out of reach and are left that way, each ending the walk at the branch before it:
- *  a backslash escape inside a branch name (`\[(alpha|be\-ta|gamma)\]` yields `alpha`, `be`), a
- *  brace quantifier (`\[(one|two{2}|three)\]` yields `one`, `two`) and a character class
- *  (`\[(one|two[ab]|three)\]`, the same). Only the escape is hard to step over: letting the
- *  IDENTIFIER span escapes makes it swallow a closing `\]` and invent names like `party-turn]`. The
- *  other two are simply unneeded — every alternation branch in the five swept parsers is a plain
- *  identifier (`main|side|extra|action|thought|whisper`, `music|sfx|bg|ambient`, `Note|Book`), and a
- *  walk widened to step over all three finds not one extra name in any of them. The truncation is
- *  documented rather than papered over. */
-const tagAlternation = /(?:\((?:[^()\\]|\\.)*\)|[?*+]|:|\s)*\|\s*/y;
+// The strip's own behavior, on a synthetic source, because every sweep below sees only what it
+// returns. A `/*` inside a string literal is not a comment opener, and the plain regex this replaced
+// treated it as one — deleting everything from the literal through to the next block-comment close.
+// That shape ships: sixty-seven string literals across the swept files carry `/*`, from
+// `"image/*"` on a file input to the bot-browser `Accept` headers and route globs, and the regex
+// strip ate 2,456 lines of live source out of 131 of them. Source deleted before a sweep reads it is
+// exactly the vacuous narrowing this file exists to catch, so the strip is now pinned in both
+// directions: the literal survives with the code after it, and real comments still vanish.
+const strippedFixture = withoutComments(
+  [
+    'api.get("/assets/*", handler); // [trailing_tag: prose]',
+    "const kept = parseChatMetadata(chat.metadata).scenario;",
+    "/* [block_tag: prose] */",
+    "  // [line_tag: prose]",
+  ].join("\n"),
+);
+assert.match(strippedFixture, /"\/assets\/\*"/, "a string literal carrying /* is not a comment opener");
+assert.match(
+  strippedFixture,
+  /const kept = parseChatMetadata\(chat\.metadata\)\.scenario;/,
+  "the source after such a literal survives the strip",
+);
+for (const prose of ["trailing_tag", "block_tag", "line_tag"]) {
+  assert.ok(!strippedFixture.includes(prose), `a real comment still vanishes (${prose})`);
+}
+
+// ── Pin 1: reserved GM tag names ─────────────────────────────────────────────
 
 /** Every bracket-tag name a parser matches, walking the alternation groups the dialogue tokens
  *  live in: `\[(main|side|extra|action|thought|whisper(?::…)?)\]` names six tags, and a scan that
@@ -120,6 +169,26 @@ const tagAlternation = /(?:\((?:[^()\\]|\\.)*\)|[?*+]|:|\s)*\|\s*/y;
  *  bracket there is a `(`. An opener is an escaped bracket inside a regex literal or a bracket at
  *  the head of a string literal. */
 function bracketTagNames(source: string): Set<string> {
+  // All three walk regexes are sticky, so each carries a `lastIndex` the walk below rewrites between
+  // every step. They are built per call rather than once beside the function so that position state
+  // belongs to one invocation and cannot be inherited from — or left behind for — another.
+  const groupOpeners = /(?:\((?:\?(?:[:!=]|<[=!]|<[A-Za-z_$][\w$]*>))?)*/y;
+  const tagIdentifier = /[A-Za-z_][A-Za-z0-9_-]*/y;
+  /** The `|` opening the next alternation branch, plus whatever regex noise sits between it and the
+   *  branch just read: a trailing group, a quantifier, a colon, or spaces on either side.
+   *  `\[(main|whisper(?::[^\]]+)?|thought)\]` names three tags, and a walk that stops at the group
+   *  finds two — a truncation that reads as a narrower pin rather than as a failure, which is why the
+   *  synthetic fixture below puts the group-carrying branch in the MIDDLE of its alternation. THREE
+   *  shapes stay out of reach and are left that way, each ending the walk at the branch before it:
+   *  a backslash escape inside a branch name (`\[(alpha|be\-ta|gamma)\]` yields `alpha`, `be`), a
+   *  brace quantifier (`\[(one|two{2}|three)\]` yields `one`, `two`) and a character class
+   *  (`\[(one|two[ab]|three)\]`, the same). Only the escape is hard to step over: letting the
+   *  IDENTIFIER span escapes makes it swallow a closing `\]` and invent names like `party-turn]`. The
+   *  other two are simply unneeded — every alternation branch in the five swept parsers is a plain
+   *  identifier (`main|side|extra|action|thought|whisper`, `music|sfx|bg|ambient`, `Note|Book`), and a
+   *  walk widened to step over all three finds not one extra name in any of them. The truncation is
+   *  documented rather than papered over. */
+  const tagAlternation = /(?:\((?:[^()\\]|\\.)*\)|[?*+]|:|\s)*\|\s*/y;
   const names = new Set<string>();
   for (const opener of source.matchAll(/(?:\\\[|["'`]\[)/g)) {
     let index = (opener.index ?? 0) + opener[0].length;
@@ -660,7 +729,13 @@ assert.deepEqual(
 assert.equal(
   unreadableWriteCalls,
   20,
-  `chat-metadata writes this sweep cannot read statically changed: ${unreadableWriteSites.join(", ")}`,
+  `chat-metadata writes this sweep cannot read statically changed: expected 20, found ${unreadableWriteCalls}. ` +
+    "This count is a boundary marker, not a budget, so do not simply edit the number to match. Read the " +
+    "call this added by hand — the sites are listed below — and decide what it writes: if it commits a key " +
+    "under a namespace that is not already in ENGINE_OWNED_METADATA_KEY_PREFIXES, add that namespace (or " +
+    "widen the walk that should have read the call), because until then a package can squat it. If the " +
+    "call is genuinely unreadable and squats nothing, bump this number deliberately and say in the commit " +
+    `which call it accounts for. Sites: ${unreadableWriteSites.join(", ")}`,
 );
 
 const ownedPrefixes = new Set<string>(ENGINE_OWNED_METADATA_KEY_PREFIXES);
@@ -771,6 +846,16 @@ refusesVerb({ ...weatherVerb, name: "party-turn" }, "a hyphenated verb name is r
 refusesVerb({ ...weatherVerb, description: "Line one.\nLine two." }, "a prompt line cannot break");
 refusesVerb({ ...weatherVerb, description: "Emit [weather: …] here." }, "a prompt line cannot carry brackets");
 refusesVerb({ ...weatherVerb, description: "" }, "a verb must describe itself");
+// CR and LF are not the whole break vocabulary, and a control character reshapes the rendered line
+// without ending it — a tab walks the next verb out of the column the COMMANDS block is read in.
+refusesVerb(
+  { ...weatherVerb, description: "Line one.\u2028Line two." },
+  "a Unicode line separator breaks the prompt line too",
+);
+refusesVerb(
+  { ...weatherVerb, description: "Set the sky.\tThen stop." },
+  "a tab is refused as a control character",
+);
 refusesVerb({ ...weatherVerb, metadataKey: undefined }, "a state verb must name its metadata key");
 refusesVerb({ ...standingVerb, metadataKey: "pixelforgeStanding" }, "an event verb must not squat a key");
 refusesVerb({ ...weatherVerb, effect: "broadcast" }, "an unknown effect is refused");
@@ -790,6 +875,10 @@ refusesVerb(
 refusesVerb(
   { ...weatherVerb, args: [{ name: "word", type: "string", enum: ["fair"], maxLength: 10 }] },
   "an enum already bounds the value",
+);
+refusesVerb(
+  { ...weatherVerb, args: [{ name: "word", type: "string", enum: ["fair", "fair"] }] },
+  "a value set cannot repeat a value",
 );
 refusesVerb(
   {
