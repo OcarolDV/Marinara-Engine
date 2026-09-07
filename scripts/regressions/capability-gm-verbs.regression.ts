@@ -8,7 +8,7 @@
 //     cannot become shadowable by a package verb;
 //   - ENGINE_OWNED_METADATA_KEY_PREFIXES vs every top-level ChatMetadata key, every engine-owned
 //     *_METADATA_KEY constant, and every key that lives in the interface's index signature rather
-//     than in its declaration — read out of chat-metadata writes in all three of their shapes, reads
+//     than in its declaration — read out of chat-metadata writes in all four of their shapes, reads
 //     in all three of theirs, and the Engine's own curated list of per-chat keys, which is the only
 //     source that sees a key written and read entirely across function boundaries — so a new engine
 //     namespace cannot become squattable.
@@ -18,7 +18,7 @@
 // unique, and uniqueness is a property of the whole union: adding a source can silently make an
 // existing canary vacuous, so every canary here is re-audited against the other sources whenever
 // one joins. Where a source has no such key, the extractor's own behavior is pinned instead, on a
-// synthetic input. Two things no sweep here can read: a patch call handed a variable, which is
+// synthetic input. Two things no sweep here can read: a metadata write handed a variable, which is
 // counted rather than ignored with the count pinned; and a metadata read that happens inside a
 // helper, off a parameter, which is why a curated Engine list is one of the sources.
 //
@@ -50,10 +50,21 @@ function withoutComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
 }
 
+/** The chat-metadata route path, kept alive through the strip below. It carries no quote, brace,
+ *  bracket, parenthesis or regex metacharacter, so it is inert everywhere except in the one arm
+ *  that looks for it. */
+const CHAT_METADATA_ROUTE_MARKER = '"@chatMetadataRoute"';
+
 /** Comments and string literals both stripped. The metadata-write sweep matches braces and
- *  parentheses by hand, so a `{`, `}` or `(` inside a string would throw the balance off. */
+ *  parentheses by hand, so a `{`, `}` or `(` inside a string would throw the balance off. One
+ *  literal survives as a marker rather than as `""`: the direct-PATCH arm recognizes its calls by
+ *  their URL (`PATCH /chats/:id/metadata`) and nothing else on the line tells them apart from any
+ *  other `api.patch`, so erasing the path would erase the arm. */
 function withoutCommentsOrStrings(source: string): string {
-  return withoutComments(source).replace(/"(?:[^"\\\r\n]|\\.)*"|'(?:[^'\\\r\n]|\\.)*'|`(?:[^`\\]|\\.)*`/g, '""');
+  return withoutComments(source).replace(
+    /"(?:[^"\\\r\n]|\\.)*"|'(?:[^'\\\r\n]|\\.)*'|`(?:[^`\\]|\\.)*`/g,
+    (literal) => (/^.\/chats\/[^\s]*\/metadata.$/.test(literal) ? CHAT_METADATA_ROUTE_MARKER : '""'),
+  );
 }
 
 function sourceOf(relativePath: string): string {
@@ -91,12 +102,16 @@ const tagIdentifier = /[A-Za-z_][A-Za-z0-9_-]*/y;
  *  branch just read: a trailing group, a quantifier, a colon, or spaces on either side.
  *  `\[(main|whisper(?::[^\]]+)?|thought)\]` names three tags, and a walk that stops at the group
  *  finds two — a truncation that reads as a narrower pin rather than as a failure, which is why the
- *  synthetic fixture below puts the group-carrying branch in the MIDDLE of its alternation. One
- *  shape stays out of reach and is left that way: a branch name written with a backslash escape
- *  (`be\-ta`) still ends the walk, because letting the IDENTIFIER span escapes makes it swallow a
- *  closing `\]` and invent names like `party-turn]`. Every alternation branch in the five swept
- *  parsers is a plain identifier (`main|side|extra|action|thought|whisper`, `music|sfx|bg|ambient`,
- *  `Note|Book`), so the truncation is documented rather than papered over. */
+ *  synthetic fixture below puts the group-carrying branch in the MIDDLE of its alternation. THREE
+ *  shapes stay out of reach and are left that way, each ending the walk at the branch before it:
+ *  a backslash escape inside a branch name (`\[(alpha|be\-ta|gamma)\]` yields `alpha`, `be`), a
+ *  brace quantifier (`\[(one|two{2}|three)\]` yields `one`, `two`) and a character class
+ *  (`\[(one|two[ab]|three)\]`, the same). Only the escape is hard to step over: letting the
+ *  IDENTIFIER span escapes makes it swallow a closing `\]` and invent names like `party-turn]`. The
+ *  other two are simply unneeded — every alternation branch in the five swept parsers is a plain
+ *  identifier (`main|side|extra|action|thought|whisper`, `music|sfx|bg|ambient`, `Note|Book`), and a
+ *  walk widened to step over all three finds not one extra name in any of them. The truncation is
+ *  documented rather than papered over. */
 const tagAlternation = /(?:\((?:[^()\\]|\\.)*\)|[?*+]|:|\s)*\|\s*/y;
 
 /** Every bracket-tag name a parser matches, walking the alternation groups the dialogue tokens
@@ -408,6 +423,33 @@ function metadataWriteKeys(source: string): { keys: string[]; unreadableCalls: n
   return { keys, unreadableCalls };
 }
 
+/** The fourth write shape: a direct `PATCH /chats/:id/metadata` from client code, which goes
+ *  through neither `patchMetadata` nor the mutation hook below — `GameSurface.tsx` reaches for it a
+ *  dozen times (`api.patch(…, { gameCombatState: null })`) and the impersonate slash command twice.
+ *  Only a bare object literal is read: the route takes a patch object and never an updater, so an
+ *  argument of any other shape — a variable, a helper's return value, a route handler that happened
+ *  to be registered under this path — is counted like the unreadable `patchMetadata` calls rather
+ *  than guessed at. A computed key (`{ [key]: value }`) is a readable literal that names nothing,
+ *  the same way it is for the walk above. */
+const metadataRoutePatchCall = new RegExp(
+  `\\.\\s*patch\\s*(?:<[^<>]*>)?\\s*\\(\\s*${CHAT_METADATA_ROUTE_MARKER}\\s*,`,
+  "g",
+);
+function metadataRouteWriteKeys(source: string): { keys: string[]; unreadableCalls: number } {
+  const keys: string[] = [];
+  let unreadableCalls = 0;
+  for (const call of source.matchAll(metadataRoutePatchCall)) {
+    const start = (call.index ?? 0) + call[0].length;
+    const literal = /^\s*\{/.exec(source.slice(start, start + 40));
+    if (!literal) {
+      unreadableCalls += 1;
+      continue;
+    }
+    keys.push(...objectLiteralKeys(source, start + literal[0].length - 1));
+  }
+  return { keys, unreadableCalls };
+}
+
 /** Chat-metadata writes that never touch `patchMetadata` at all. The client PATCHes
  *  `/chats/:id/metadata` through `useUpdateChatMetadata()`, whose input is `{ id, ...metadata }`,
  *  and the chat-settings sections write through an `onMetadataChange` prop that forwards into it.
@@ -484,20 +526,23 @@ function parseChatMetadataReadKeys(source: string): string[] {
 // failure this file exists to prevent. A package that squatted one of those namespaces could have
 // a state verb overwrite the Engine's own key from model output.
 //
-// It takes six sub-sources, because none of them sees the vocabulary alone: the two patch-argument
-// shapes, the client's own metadata mutation, the two read idioms, and one list the Engine already
-// maintains by hand.
+// It takes seven sub-sources, because none of them sees the vocabulary alone: the two
+// `patchMetadata` argument shapes, the client's own metadata mutation, the client's direct PATCHes
+// to the metadata route, the two read idioms, and one list the Engine already maintains by hand.
 let unreadableWriteCalls = 0;
 const unreadableWriteSites: string[] = [];
 for (const file of [...serverSourceFiles, ...sharedSourceFiles, ...clientSourceFiles]) {
   const source = withoutCommentsOrStrings(file.source);
   const written = metadataWriteKeys(source);
-  for (const key of written.keys) engineMetadataKeys.add(key);
-  if (written.unreadableCalls > 0) {
-    unreadableWriteCalls += written.unreadableCalls;
-    unreadableWriteSites.push(
-      `${file.path.slice(repositoryRoot.length).replace(/\\/g, "/")} x${written.unreadableCalls}`,
-    );
+  const routed = metadataRouteWriteKeys(source);
+  for (const key of [...written.keys, ...routed.keys]) engineMetadataKeys.add(key);
+  // Both write shapes feed one count: a key committed through either and readable through neither
+  // is the same blind spot, and pooling them is what makes dropping the route arm red the pin below
+  // rather than quietly narrowing the derivation.
+  const unreadable = written.unreadableCalls + routed.unreadableCalls;
+  if (unreadable > 0) {
+    unreadableWriteCalls += unreadable;
+    unreadableWriteSites.push(`${file.path.slice(repositoryRoot.length).replace(/\\/g, "/")} x${unreadable}`);
   }
   for (const key of chatMetadataMutationKeys(source)) engineMetadataKeys.add(key);
   for (const key of parseChatMetadataReadKeys(source)) engineMetadataKeys.add(key);
@@ -508,21 +553,23 @@ for (const file of [...serverSourceFiles, ...sharedSourceFiles, ...clientSourceF
     for (const match of source.matchAll(pattern)) engineMetadataKeys.add(match[1]!);
   }
 }
-// Sub-source 6 — the keys the Engine already knows belong to a chat rather than to a reusable
+// Sub-source 7 — the keys the Engine already knows belong to a chat rather than to a reusable
 // settings profile. This one is a hand-maintained list rather than a sweep, and that is exactly why
-// it reaches what the five above cannot: `spatialContext` is written into chat metadata by the
-// hierarchical-maps package's own client through the metadata PATCH route, so no patch-call literal
-// in this repository names it, and the Engine reads it back off a `patchMetadata` updater's
-// `current` parameter handed to `hasUsableHierarchicalWorldMap()` (world-map-mode.ts) and off a
-// file-local `parseMetadata()` in the legacy capability chat migration. Both reads are
-// interprocedural, so no widening of the read arms above would have found it.
+// it reaches what the six above cannot: `spatialContext` is written into chat metadata by the
+// hierarchical-maps package's own client — code that lives in the Agents repository, not this one —
+// through the same metadata PATCH route the arm above sweeps, so no write site in this repository
+// names it in any shape, and the Engine reads it back off a `patchMetadata` updater's `current`
+// parameter handed to `hasUsableHierarchicalWorldMap()` (world-map-mode.ts) and off a file-local
+// `parseMetadata()` in the legacy capability chat migration. Both reads are interprocedural, so no
+// widening of the read arms above would have found it either.
 for (const key of CHAT_PRESET_EXCLUDED_METADATA_KEYS) engineMetadataKeys.add(key);
 
-// One canary per sub-source, each a key no OTHER source in the union supplies, so dropping a source
-// reds this file instead of quietly narrowing the pin: `mariPermissionsMode` is only ever a written
-// patch literal, `customMusicFolder` only a client mutation payload, `scenario` only a
-// `parseChatMetadata` local read, `crossChatAwareness` only a `chatMeta.*` property read, and
-// `spatialContext` only the excluded-key list.
+// One canary per sub-source THAT HAS ONE — a key no OTHER source in the union supplies, so dropping
+// that source reds this file instead of quietly narrowing the pin: `mariPermissionsMode` is only
+// ever a written patch literal, `customMusicFolder` only a client mutation payload, `scenario` only
+// a `parseChatMetadata` local read, `crossChatAwareness` only a `chatMeta.*` property read, and
+// `spatialContext` only the excluded-key list. Two sub-sources have no such key and get no canary:
+// see the updater-callback and route arms below.
 assert.ok(engineMetadataKeys.has("mariPermissionsMode"), "the patchMetadata literal walk is part of the sweep");
 assert.ok(engineMetadataKeys.has("customMusicFolder"), "the client metadata-mutation sweep is part of the sweep");
 assert.ok(engineMetadataKeys.has("scenario"), "the parseChatMetadata read sweep is part of the sweep");
@@ -553,6 +600,29 @@ assert.deepEqual(
   ),
   { keys: ["direct", "concise", "early", "late"], unreadableCalls: 1 },
 );
+// The route arm is the second sub-source with no key of its own: all twelve keys its literals commit
+// (`gameCombatState`, `gameNarrationIndex`, `gameSceneMusic`, `impersonatePrompt`, …) are also read
+// through `chatMeta.*`, so a canary here would be vacuous the day it was written — the mistake this
+// file already made once with `element_attack`. What makes the arm load-bearing is the count: its
+// two variable-argument calls are pooled into the pinned total above, so the arm cannot be dropped
+// without taking two off it. Its walk is pinned on its own behavior as well, on a synthetic source
+// carrying every shape it classifies: a bare patch object, a call with a type argument, a computed
+// key that names nothing, an argument that is not a literal, and a PATCH to a different route. The
+// source is run through the real stripper, so the route marker is pinned here too.
+assert.deepEqual(
+  metadataRouteWriteKeys(
+    withoutCommentsOrStrings(
+      [
+        "api.patch(`/chats/${id}/metadata`, { direct: 1 });",
+        "api.patch<Chat>(`/chats/${id}/metadata`, { typed: 2 });",
+        "api.patch(`/chats/${id}/metadata`, { [computed]: 3 });",
+        "api.patch(`/chats/${id}/metadata`, prebuiltPatch);",
+        "api.patch(`/chats/${id}/messages`, { notMetadata: 4 });",
+      ].join("\n"),
+    ),
+  ),
+  { keys: ["direct", "typed"], unreadableCalls: 1 },
+);
 // The mutation sweep's own behavior: through the hook binding, through an alias of it, and through
 // the settings prop — with the chat id dropped, since it is the route parameter and not a key.
 assert.deepEqual(
@@ -577,16 +647,20 @@ assert.deepEqual(
   ).sort(),
   ["viaDirect", "viaLocal"],
 );
-// The honest boundary of the whole derivation, and the half of it that a count can express: patch
-// calls handed a variable or a helper's return value. Their keys cannot be read from here at all,
-// so the COUNT is pinned — a nineteenth fails this regression until someone reads it by hand and
-// either widens the walk above or adds the namespace to ENGINE_OWNED_METADATA_KEY_PREFIXES. The
-// other half — a read off a parameter inside a helper — has no count to pin, which is why sub-source
-// 6 exists rather than a sixth sweep. The docs state both limits.
+// The honest boundary of the whole derivation, and the half of it that a count can express: a write
+// handed a variable or a helper's return value, in either write shape. Its keys cannot be read from
+// here at all, so the COUNT is pinned — a twenty-first fails this regression until someone reads it
+// by hand and either widens a walk above or adds the namespace to
+// ENGINE_OWNED_METADATA_KEY_PREFIXES. Eighteen are `patchMetadata`/`updateMetadata` calls; the other
+// two are route PATCHes, and neither is a live gap today — one is the mutation hook's own
+// implementation, whose keys the client-mutation arm reads at its call sites instead, and the other
+// is a debounced scene patch assembled into a variable whose four keys the literal beside it repeats
+// verbatim. The other half of the boundary — a read off a parameter inside a helper — has no count
+// to pin, which is why sub-source 7 exists rather than a seventh sweep. The docs state both limits.
 assert.equal(
   unreadableWriteCalls,
-  18,
-  `chat-metadata patch calls this sweep cannot read statically changed: ${unreadableWriteSites.join(", ")}`,
+  20,
+  `chat-metadata writes this sweep cannot read statically changed: ${unreadableWriteSites.join(", ")}`,
 );
 
 const ownedPrefixes = new Set<string>(ENGINE_OWNED_METADATA_KEY_PREFIXES);

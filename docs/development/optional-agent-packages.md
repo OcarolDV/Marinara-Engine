@@ -325,24 +325,27 @@ Engine owns, or extend one at an uppercase boundary. That namespace list is deri
 top-level `ChatMetadata` key, from the Engine's own metadata key constants, and from the keys that
 live in the interface's index signature rather than in its declaration — `encounterActive`,
 `internalAssistant`, `imageGenConnectionId` and the rest of the Engine's undeclared chat metadata,
-which the first two sources cannot see at all. Reading that third group takes six sources, because
+which the first two sources cannot see at all. Reading that third group takes seven sources, because
 the Engine writes and reads chat metadata in more shapes than one: the object a
 `patchMetadata`/`updateMetadata` call passes, the object an updater callback _returns_ (a shape
 used about as often as the first), the client's own `useUpdateChatMetadata()` mutation and its
-`onMetadataChange` prop (which never touch `patchMetadata` at all), the `chatMetadata.key` and
-`chat.metadata.key` property reads, reads off a `parseChatMetadata(…)` result — the idiom the
-Engine uses most, and the only one that sees keys like `scenario` — and, last, the list of per-chat
-metadata keys the Engine already maintains by hand for chat settings profiles, which is where keys
-that are written and read entirely across function boundaries turn up.
+`onMetadataChange` prop (which never touch `patchMetadata` at all), the client's direct
+`PATCH /chats/:id/metadata` calls (which skip that hook too — the Game surface writes its combat,
+scene and narration keys this way), the `chatMetadata.key` and `chat.metadata.key` property reads,
+reads off a `parseChatMetadata(…)` result — the idiom the Engine uses most, and the only one that
+sees keys like `scenario` — and, last, the list of per-chat metadata keys the Engine already
+maintains by hand for chat settings profiles, which is where keys that are written and read entirely
+across function boundaries turn up.
 
 All of that is pinned by regression, extractors included. Two things are deliberately outside the
-sweeps. A patch call handed a variable or a helper's return value (`patchMetadata(id, hydratedMeta)`)
-writes keys no static sweep can read; there are eighteen such calls today and the regression pins
-that number, so a nineteenth fails the build until someone reads it by hand. And a read that happens
-_inside_ a helper, off a parameter, is interprocedural and out of reach of any read sweep — the
-shape `spatialContext` takes, written into chat metadata by the `hierarchical-maps` package's own
-client and read back through a helper and a file-local parse. That second gap is what the
-hand-maintained list closes, and it is why one of the six sources is a curated list rather than a
+sweeps. A write handed a variable or a helper's return value (`patchMetadata(id, hydratedMeta)`, or
+the same shape on the metadata route) commits keys no static sweep can read; there are twenty such
+calls today and the regression pins that number, so a twenty-first fails the build until someone
+reads it by hand. And a read that happens _inside_ a helper, off a parameter, is interprocedural and
+out of reach of any read sweep — the shape `spatialContext` takes, written into chat metadata by the
+`hierarchical-maps` package's own client, which ships from the Agents repository rather than this
+one, and read back here through a helper and a file-local parse. That second gap is what the
+hand-maintained list closes, and it is why one of the seven sources is a curated list rather than a
 derivation. The derivation names its blind spots instead of claiming to have none. One entry in the
 list, `persona`, is a hand-added floor no source produces today. The third rule refuses whole
 packages, deliberately: `conversation-calls` normalizes to `conversationCalls`, and

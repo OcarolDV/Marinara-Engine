@@ -114,30 +114,33 @@ const reservedGmTagNames = new Set<string>(RESERVED_GM_TAG_NAMES);
  *       (`encounterActive`, `internalAssistant`, `professorMariActive`, `imageGenConnectionId`,
  *       `authorNotes`), and sources 1 and 2 are structurally blind to all of it — a package
  *       squatting one of those namespaces could overwrite an Engine key from model output. It takes
- *       six sub-sources, because no single one covers the vocabulary: the object literal a
+ *       seven sub-sources, because no single one covers the vocabulary: the object literal a
  *       `patchMetadata`/`updateMetadata` call passes; the object literal an updater callback
  *       RETURNS, a shape the Engine reaches for about as often as the first; the client's own
  *       `useUpdateChatMetadata()` mutation and its `onMetadataChange` prop, which PATCH chat
- *       metadata without going near `patchMetadata`; the `chatMetadata.key` / `chat.metadata.key`
- *       property reads; property reads off a `parseChatMetadata(…)` result, the idiom the Engine
- *       actually uses most and the only one that reaches `scenario`; and
+ *       metadata without going near `patchMetadata`; the client's DIRECT `PATCH
+ *       /chats/:id/metadata` calls, which skip that hook as well (`GameSurface.tsx` writes combat,
+ *       scene and narration keys this way); the `chatMetadata.key` / `chat.metadata.key` property
+ *       reads; property reads off a `parseChatMetadata(…)` result, the idiom the Engine actually
+ *       uses most and the only one that reaches `scenario`; and
  *       `CHAT_PRESET_EXCLUDED_METADATA_KEYS` (`packages/shared/src/types/chat-preset.ts`), which is
  *       not a sweep at all but the list the Engine already hand-maintains of the keys that belong
  *       to a chat rather than to a reusable settings profile. That list is the only source that
- *       reaches `spatialContext`, and it reaches it precisely because the five sweeps cannot.
+ *       reaches `spatialContext`, and it reaches it precisely because the six sweeps cannot.
  *  Plus `persona`, an engine namespace no current key happens to start with; it is floored
  *  explicitly rather than left to appear the day something claims it.
  *
- *  What the derivation CANNOT see, stated plainly, in two shapes. A patch call whose second
- *  argument is a variable or a helper's return value (`patchMetadata(id, hydratedMeta)`) writes keys
- *  no static sweep in this repository can read; there are eighteen such calls, and the regression
- *  pins that count, so a nineteenth fails until someone reads it by hand. And a read that happens
- *  INSIDE a helper, off a parameter rather than off a name a sweep recognizes, is interprocedural
- *  and out of reach of every read arm here: `spatialContext` is written into chat metadata by the
- *  hierarchical-maps package's own client through the metadata PATCH route, and read back by
+ *  What the derivation CANNOT see, stated plainly, in two shapes. A write whose payload is a
+ *  variable or a helper's return value (`patchMetadata(id, hydratedMeta)`, or the same shape on the
+ *  metadata route) commits keys no static sweep in this repository can read; there are twenty such
+ *  calls, and the regression pins that count, so a twenty-first fails until someone reads it by
+ *  hand. And a read that happens INSIDE a helper, off a parameter rather than off a name a sweep
+ *  recognizes, is interprocedural and out of reach of every read arm here: `spatialContext` is
+ *  written into chat metadata by the hierarchical-maps package's own client — code that ships from
+ *  the Agents repository, so no write site here names it — and read back by
  *  `hasUsableHierarchicalWorldMap(current)` off a `patchMetadata` updater's parameter and by a
  *  file-local `parseMetadata()` in the capability migration. Widening a sweep does not close that
- *  shape; source 6 does, which is why a curated Engine list sits beside five derivations here.
+ *  shape; source 7 does, which is why a curated Engine list sits beside six derivations here.
  *  Everything else is derived. */
 export const ENGINE_OWNED_METADATA_KEY_PREFIXES = Object.freeze([
   "active",
@@ -453,9 +456,12 @@ export type GmVerbTable = z.infer<typeof gmVerbTableSchema>;
 /** Envelope-only table shape, derived from the real schema so the two cannot drift: entries stay
  *  unparsed so one verb from a NEWER Engine cannot fail the whole table — within the cap, which
  *  the envelope carries too, so a table of MORE than sixteen verbs is refused whole rather than
- *  degrading per verb — and `.strip()` (not strict, not passthrough) so newer TOP-LEVEL fields
- *  neither reject the envelope nor leak into the result. Same shape as
- *  `parseCapabilityCatalogWithCompat`'s envelope, for the same reason. */
+ *  degrading per verb — and `.strip()` rather than `.strict()`, so a newer TOP-LEVEL field does not
+ *  reject the envelope. Nothing leaks whichever of the two tolerant modes is chosen: the result is
+ *  rebuilt field by field below (`{ schemaVersion: envelope.schemaVersion, verbs: deduped }`), so
+ *  `.passthrough()` here would behave identically and `.strip()` states the intent rather than
+ *  supplying the guarantee. Same shape as `parseCapabilityCatalogWithCompat`'s envelope, for the
+ *  same reason. */
 const gmVerbTableEnvelopeSchema = z
   .object({ schemaVersion: z.literal(1), verbs: z.array(z.unknown()).min(1).max(16) })
   .strip();
