@@ -29,6 +29,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import {
   camelCaseCapabilityPackageId,
   createGmVerbTableSchema,
@@ -47,44 +48,57 @@ const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 /** Comments are stripped before every sweep below: a bracket tag inside a doc comment
  *  (`[some_tag: …]`, `"[tagPrefix:"`) is prose about the parser, not vocabulary it handles.
  *
- *  The scan is string-aware because a regex cannot be. A plain block-comment pattern opens a comment
- *  at the `/*` inside a string literal — `"image/*"`, the bot-browser route globs, the `Accept`
- *  headers, sixty-seven of them across the files swept below — and then deletes everything through
- *  to the next block-comment close, taking live source with it. That is precisely the failure this
- *  file exists to catch: a sweep reading less than it claims to, and passing vacuously because what
- *  it should have found went missing before it looked. Quoted literals are skipped rather than
- *  parsed, and kept verbatim, because Pin 1 reads bracket tags out of string literals and the
- *  metadata sweep strips them itself. A `'` or `"` literal ends at its own newline, as JavaScript's
- *  does, so a quote inside a regex character class can at worst preserve a comment — which shows up
- *  as an unpinned tag, loudly — and can never eat code. */
-function withoutComments(source: string): string {
-  const opener = /["'`]|\/[/*]/g;
+ *  The stripper is the TypeScript compiler's own parser, because nothing short of a parser can do
+ *  this correctly. Whether a `/` opens a comment, opens a regex or divides is not a lexical property
+ *  of the two characters — it depends on the grammar around them — so every hand scan gets it wrong
+ *  in both directions, and the one this replaced got it wrong in both: `/[/*]/` opened a block
+ *  comment and ate the source through to the next `*` + `/` anywhere in the file, `/[//]/` and a
+ *  regex ending `\//` each ate the rest of their own line, and a `'` inside a character class
+ *  desynced the walk into treating live code as string body and skipping real comments inside it.
+ *  Twenty-nine files across the sweep corpus came out wrong one of those two ways. Source deleted
+ *  before a sweep reads it — or prose left in front of one — is exactly the vacuous narrowing this
+ *  file exists to catch: a sweep reading less than it claims to, and passing because what it should
+ *  have found went missing before it looked. So the parse IS the strip: every token's leading and
+ *  trailing comment ranges, spliced out. Across the 1,337 swept files it removes 22,423 ranges, every
+ *  one a well-formed comment, none overlapping a string, template or regex literal.
+ *
+ *  `fileName` is how the parser is told which dialect to read, and neither dialect is safe as a
+ *  blanket default — `createSourceFile` takes it off the extension. Read as TSX, the `<{ Params: … }>`
+ *  type argument on `app.get` in `game.routes.ts` parses as JSX and hides 313 of that file's 665
+ *  comments; read as TS, the JSX in `markdown.tsx` hides 23 of its 105. Both are files swept below.
+ *  Callers holding a path pass it; the synthetic fixtures take the default.
+ *
+ *  String literals are kept verbatim, as before, because Pin 1 reads bracket tags out of them and the
+ *  metadata sweep strips them itself. */
+function withoutComments(source: string, fileName = "sweep.ts"): string {
+  const parsed = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, /* setParentNodes */ false);
+  const comments: ts.CommentRange[] = [];
+  const started = new Set<number>();
+  const collect = (found: ts.CommentRange[] | undefined) => {
+    // A comment trailing one token is the leading trivia of the next, so it arrives twice. Both
+    // halves are needed: a comment on the same line as the code before it is trailing-only, and one
+    // on its own line is leading-only.
+    for (const range of found ?? []) {
+      if (started.has(range.pos)) continue;
+      started.add(range.pos);
+      comments.push(range);
+    }
+  };
+  const walk = (node: ts.Node) => {
+    for (const child of node.getChildren(parsed)) {
+      collect(ts.getLeadingCommentRanges(source, child.pos));
+      collect(ts.getTrailingCommentRanges(source, child.end));
+      walk(child);
+    }
+  };
+  walk(parsed);
+  comments.sort((left, right) => left.pos - right.pos);
   let out = "";
   let index = 0;
-  for (;;) {
-    opener.lastIndex = index;
-    const hit = opener.exec(source);
-    if (!hit) break;
-    out += source.slice(index, hit.index);
-    if (hit[0] === "//") {
-      const end = source.indexOf("\n", hit.index);
-      index = end === -1 ? source.length : end;
-      continue;
-    }
-    if (hit[0] === "/*") {
-      const end = source.indexOf("*/", hit.index + 2);
-      index = end === -1 ? source.length : end + 2;
-      continue;
-    }
-    const quote = hit[0];
-    let end = hit.index + 1;
-    while (end < source.length && source[end] !== quote) {
-      if (source[end] === "\\") end += 1;
-      else if (source[end] === "\n" && quote !== "`") break;
-      end += 1;
-    }
-    out += source.slice(hit.index, end + 1);
-    index = end + 1;
+  for (const comment of comments) {
+    if (comment.pos < index) continue;
+    out += source.slice(index, comment.pos);
+    index = comment.end;
   }
   return out + source.slice(index);
 }
@@ -99,8 +113,8 @@ const CHAT_METADATA_ROUTE_MARKER = '"@chatMetadataRoute"';
  *  literal survives as a marker rather than as `""`: the direct-PATCH arm recognizes its calls by
  *  their URL (`PATCH /chats/:id/metadata`) and nothing else on the line tells them apart from any
  *  other `api.patch`, so erasing the path would erase the arm. */
-function withoutCommentsOrStrings(source: string): string {
-  return withoutComments(source).replace(
+function withoutCommentsOrStrings(source: string, fileName?: string): string {
+  return withoutComments(source, fileName).replace(
     /"(?:[^"\\\r\n]|\\.)*"|'(?:[^'\\\r\n]|\\.)*'|`(?:[^`\\]|\\.)*`/g,
     (literal) => (/^.\/chats\/[^\s]*\/metadata.$/.test(literal) ? CHAT_METADATA_ROUTE_MARKER : '""'),
   );
@@ -136,19 +150,27 @@ const clientSourceFiles = readSourceFiles("packages/client/src");
 // ── The comment strip both pins read through ─────────────────────────────────
 
 // The strip's own behavior, on a synthetic source, because every sweep below sees only what it
-// returns. A `/*` inside a string literal is not a comment opener, and the plain regex this replaced
-// treated it as one — deleting everything from the literal through to the next block-comment close.
-// That shape ships: sixty-seven string literals across the swept files carry `/*`, from
-// `"image/*"` on a file input to the bot-browser `Accept` headers and route globs, and the regex
-// strip ate 2,456 lines of live source out of 131 of them. Source deleted before a sweep reads it is
-// exactly the vacuous narrowing this file exists to catch, so the strip is now pinned in both
-// directions: the literal survives with the code after it, and real comments still vanish.
+// returns. Neither a `/*` inside a string literal nor one inside a regex literal is a comment
+// opener, and both of the hand scans this replaced read one or the other as one. Both shapes ship:
+// sixty-seven string literals across the swept files carry `/*`, from `"image/*"` on a file input to
+// the bot-browser `Accept` headers and route globs, and the first regex strip ate 2,456 lines of live
+// source out of 131 of them; the hand scan that fixed THAT still read a regex literal's contents as
+// comment openers, and `/^https?:\/\//i`, `/^models\//` and their kin ate the rest of their lines
+// across nineteen more. Source deleted before a sweep reads it is exactly the vacuous narrowing this
+// file exists to catch, so the strip is pinned in both directions: the literals survive with the code
+// after them, and real comments still vanish.
 const strippedFixture = withoutComments(
   [
     'api.get("/assets/*", handler); // [trailing_tag: prose]',
     "const kept = parseChatMetadata(chat.metadata).scenario;",
     "/* [block_tag: prose] */",
     "  // [line_tag: prose]",
+    "const blockish = /[/*]/;",
+    "const afterBlockish = blockishSurvivor;",
+    "const lineish = /[//]/;",
+    "const afterLineish = lineishSurvivor;",
+    "const tailing = /path\\//;",
+    "const afterTailing = tailingSurvivor;",
   ].join("\n"),
 );
 assert.match(strippedFixture, /"\/assets\/\*"/, "a string literal carrying /* is not a comment opener");
@@ -157,6 +179,19 @@ assert.match(
   /const kept = parseChatMetadata\(chat\.metadata\)\.scenario;/,
   "the source after such a literal survives the strip",
 );
+// A regex literal is not a comment opener either, in any of the three shapes that used to break the
+// scan: `/*` inside a character class (which opened a block comment and ate everything through to the
+// next close, here the whole rest of the fixture), `//` inside one, and an escaped slash immediately
+// before the closing delimiter (which ate the line tail). Each is pinned with the statement after it,
+// because losing the survivor is how the damage actually shows up in a sweep.
+for (const [literal, survivor] of [
+  ["/[/*]/", "blockishSurvivor"],
+  ["/[//]/", "lineishSurvivor"],
+  ["/path\\//", "tailingSurvivor"],
+] as const) {
+  assert.ok(strippedFixture.includes(literal), `a regex literal carrying a comment opener survives (${literal})`);
+  assert.ok(strippedFixture.includes(survivor), `the source after such a regex survives the strip (${survivor})`);
+}
 for (const prose of ["trailing_tag", "block_tag", "line_tag"]) {
   assert.ok(!strippedFixture.includes(prose), `a real comment still vanishes (${prose})`);
 }
@@ -218,7 +253,7 @@ for (const file of [
   "packages/server/src/services/game/gm-prompts.ts",
   "packages/server/src/services/game/party-prompts.ts",
 ]) {
-  for (const match of withoutComments(sourceOf(file)).matchAll(/\[([A-Za-z_][A-Za-z0-9_]*)\s*:/g)) {
+  for (const match of withoutComments(sourceOf(file), file).matchAll(/\[([A-Za-z_][A-Za-z0-9_]*)\s*:/g)) {
     reminderTags.add(match[1]!.toLowerCase());
   }
 }
@@ -247,7 +282,7 @@ for (const file of [
   "packages/server/src/services/sidecar/scene-analyzer.ts",
   "packages/server/src/routes/generate/generate-route-utils.ts",
 ]) {
-  for (const name of bracketTagNames(withoutComments(sourceOf(file)))) parserTags.add(name);
+  for (const name of bracketTagNames(withoutComments(sourceOf(file), file))) parserTags.add(name);
 }
 
 assert.ok(reminderTags.size >= 15, `the GM reminder sweep found only ${reminderTags.size} tags; the extractor broke`);
@@ -394,9 +429,17 @@ const returnedObject = /\breturn\s*\{/y;
 
 /** A JS identifier may contain `$`, and a call target swept below may contain `.`; both are regex
  *  metacharacters, and an unescaped `$` would silently turn the pattern into one that never
- *  matches — narrowing a sweep without failing anything. */
+ *  matches — narrowing a sweep without failing anything.
+ *
+ *  The domain is dotted identifier paths, where `.` and `$` are the only metacharacters that can
+ *  occur, but the escape is TOTAL — every regex metacharacter, backslash included — so that no
+ *  future caller can narrow a sweep by handing this a name from a wider domain. A partial escaper
+ *  is only ever correct for the callers it was written against, and it fails silently for the rest:
+ *  the pattern still compiles, it just stops matching. Escaping the backslash first is what makes
+ *  the set complete rather than merely longer — an escaper that rewrote `.` but passed `\` through
+ *  would turn a name ending in a backslash into a pattern that escapes the boundary after it. */
 function escapedForPattern(name: string): string {
-  return name.replace(/[.$]/g, "\\$&");
+  return name.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
 }
 
 /** Keys of every object literal the block body at `open` returns AT ITS OWN LEVEL. Nested function
@@ -601,7 +644,7 @@ function parseChatMetadataReadKeys(source: string): string[] {
 let unreadableWriteCalls = 0;
 const unreadableWriteSites: string[] = [];
 for (const file of [...serverSourceFiles, ...sharedSourceFiles, ...clientSourceFiles]) {
-  const source = withoutCommentsOrStrings(file.source);
+  const source = withoutCommentsOrStrings(file.source, file.path);
   const written = metadataWriteKeys(source);
   const routed = metadataRouteWriteKeys(source);
   for (const key of [...written.keys, ...routed.keys]) engineMetadataKeys.add(key);
