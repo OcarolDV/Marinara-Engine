@@ -260,7 +260,7 @@ refusal on a plain verb name is usually this rule rather than a typo. The `descr
 of 1–200 characters with no square brackets and no line breaks, because it is rendered verbatim as
 the verb's line in the reminder's `COMMANDS:` block. "Line break" there is wider than CR and LF: it
 counts `U+0085`, `U+2028` and `U+2029`, which end a line for anything that reads the block back, and
-the description is refused for any other control character too — a tab being the likeliest — since
+the description is refused for the C0 controls and DEL too — a tab being the likeliest — since
 those reshape the block without ending a line at all. A verb takes up to six arguments, each
 `{ name, type, enum?, maxLength?, optional? }`, named `[a-z][a-zA-Z0-9_]*` up to 32 characters —
 deliberately wider than a verb name, which allows no uppercase, because an argument name is a JSON
