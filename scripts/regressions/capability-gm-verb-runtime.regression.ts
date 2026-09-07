@@ -147,12 +147,16 @@ const [
   { createChatsStorage },
   { getDB, closeDB },
   { supportedCapabilityApi },
+  { GM_VERB_TABLE_MAX_BYTES },
+  { logger },
 ] = await Promise.all([
   import("../../packages/server/src/services/capability-packages/package-manager.service.js"),
   import("../../packages/server/src/services/capability-packages/capability-gm-verb-runtime.service.js"),
   import("../../packages/server/src/services/storage/chats.storage.js"),
   import("../../packages/server/src/db/connection.js"),
   import("../../packages/shared/src/schemas/capability-package.schema.js"),
+  import("../../packages/shared/src/schemas/gm-verb-table.schema.js"),
+  import("../../packages/server/src/lib/logger.js"),
 ]);
 
 const {
@@ -183,6 +187,24 @@ function createReplyDouble(options: { writable?: boolean } = {}) {
     },
   };
   return { reply: { raw } as never, frames };
+}
+
+/** Capture the Pino warn lines one call produces. The service under test imports this same logger
+ *  module instance, so swapping the method is enough to see its output, and it is swapped back in a
+ *  `finally` so a failure here cannot silence the rest of the run. Format specifiers are left
+ *  unexpanded on purpose: what has to survive a refactor is the format string. */
+async function captureWarnings(run: () => Promise<void>): Promise<string[]> {
+  const warnings: string[] = [];
+  const original = logger.warn;
+  (logger as unknown as Record<string, unknown>).warn = (...args: unknown[]) => {
+    warnings.push(args.map((arg) => (typeof arg === "string" ? arg : String(arg))).join(" "));
+  };
+  try {
+    await run();
+  } finally {
+    (logger as unknown as Record<string, unknown>).warn = original;
+  }
+  return warnings;
 }
 
 const db = await getDB();
@@ -231,9 +253,37 @@ try {
   installFixture({ permissions: ["ui"] });
   assert.equal(await resolveGmVerbTable({ gameExperienceId: PACKAGE_ID }), null);
 
-  // The byte ceiling keys on the DECLARED size, before any read: the same on-disk file is refused
-  // when the manifest inflates it past the ceiling and accepted when the manifest tells the truth.
-  installFixture({ declaredBytes: 64 * 1024 + 1 });
+  // The byte ceiling. The fixture has to be GENUINELY oversized — a real >64 KB document with a
+  // truthful sha256 and a truthful `files[].bytes` — or the assertion proves nothing: a manifest that
+  // merely inflates `bytes` over a small file is refused by the integrity tier the moment the read
+  // happens, so deleting the ceiling precheck outright would leave such a pin green.
+  //
+  // Oversized but otherwise perfectly valid: the envelope is `.strip()`, so an extra top-level field
+  // parses fine and every verb below it survives. With the precheck removed this table RESOLVES,
+  // which is exactly what makes the refusal below attributable to the ceiling and nothing else.
+  const oversizeTableJson = JSON.stringify({ ...verbTable, padding: "p".repeat(GM_VERB_TABLE_MAX_BYTES) });
+  assert.ok(Buffer.byteLength(oversizeTableJson) > GM_VERB_TABLE_MAX_BYTES, "the oversize fixture must be oversize");
+  installFixture({ tableJson: oversizeTableJson });
+  assert.equal(await resolveGmVerbTable({ gameExperienceId: PACKAGE_ID }), null);
+
+  // The mirror, sitting exactly ON the ceiling: the same document shape, one padding field and all,
+  // still resolves. Without this the refusal above could be coming from the padding field rather than
+  // from the size, and the ceiling would not be shown to be a ceiling.
+  const emptyPaddingBytes = Buffer.byteLength(JSON.stringify({ ...verbTable, padding: "" }));
+  const atCeilingTableJson = JSON.stringify({
+    ...verbTable,
+    padding: "p".repeat(GM_VERB_TABLE_MAX_BYTES - emptyPaddingBytes),
+  });
+  assert.equal(Buffer.byteLength(atCeilingTableJson), GM_VERB_TABLE_MAX_BYTES, "the mirror must sit ON the ceiling");
+  installFixture({ tableJson: atCeilingTableJson });
+  const atCeiling = await resolveGmVerbTable({ gameExperienceId: PACKAGE_ID });
+  assert.ok(atCeiling, "a table exactly at the ceiling is accepted — the refusal above is the size");
+  assert.equal(atCeiling.verbs.length, 2);
+
+  // A separate tier, named for what it is: a manifest that lies about a small file's size is caught
+  // by the integrity verification inside the read, not by the ceiling. Kept under the ceiling on
+  // purpose so the two cannot be confused for each other.
+  installFixture({ declaredBytes: Buffer.byteLength(JSON.stringify(verbTable)) + 1 });
   assert.equal(await resolveGmVerbTable({ gameExperienceId: PACKAGE_ID }), null);
   installFixture();
   assert.ok(await resolveGmVerbTable({ gameExperienceId: PACKAGE_ID }));
@@ -253,16 +303,21 @@ try {
   installFixture({ status: "restart-required" });
   assert.equal(await resolveGmVerbTable({ gameExperienceId: PACKAGE_ID }), null);
 
-  // Key ownership is checked against the INSTALLING package at runtime, not against whoever authored
-  // the JSON. The identical bytes that give Pixelforge two verbs give a package that does not own
+  // Key ownership is checked against the INSTALLING package, not against whoever authored the JSON.
+  // The identical bytes that give Pixelforge two verbs give a package that does not own
   // `pixelforgeWeather` only the verb that writes nothing.
+  //
+  // What actually drops the verb here is the per-entry parse — `parseGmVerbTableWithCompat` builds
+  // `createGmVerbSchema(packageId)` from the installing id — so this pins the schema reached THROUGH
+  // the resolver, not the resolver's own re-check. That re-check exists as defense-in-depth against a
+  // future second reader and is deliberately unreachable today; deleting it would not fail this.
   installFixture({ packageId: OTHER_PACKAGE_ID });
   const foreign = await resolveGmVerbTable({ gameExperienceId: OTHER_PACKAGE_ID });
   assert.ok(foreign);
   assert.deepEqual(
     foreign.verbs.map((verb) => verb.name),
     ["standing"],
-    "a state verb whose metadataKey belongs to another package is refused at runtime",
+    "a state verb whose metadataKey belongs to another package is dropped, and the rest of the table still runs",
   );
 
   // A table of nothing but refusable verbs resolves as no table at all rather than as an empty one.
@@ -274,6 +329,8 @@ try {
 
   // A reserved built-in tag name can never become a package verb. `state` is the sharpest: it drives
   // the combat transition, so a package verb by that name would have the engine's own tag stripped.
+  // Same shape as the ownership case above: the drop happens in the per-entry parse, and the
+  // resolver's matching re-check is unreachable defense-in-depth rather than the mechanism pinned.
   installFixture({
     tableJson: JSON.stringify({
       schemaVersion: 1,
@@ -339,6 +396,23 @@ try {
   const untouched = '[inventory: action="add" item="Rope"] and [state: combat]';
   assert.equal(parseAndStripGmVerbCalls(untouched, live).content, untouched);
   assert.equal(parseAndStripGmVerbCalls(untouched, live).matched, false);
+
+  // The shared grammar is case-insensitive, so an uppercase spelling is the same verb. (The fold
+  // itself must also be locale-INDEPENDENT — `toLowerCase`, never `toLocaleLowerCase`, which maps
+  // "I" to a dotless "ı" under a Turkish/Azeri runtime locale and would miss the lookup map. That
+  // divergence is not observable from inside this process, so it is a code rule, not this assertion.)
+  const shouted = parseAndStripGmVerbCalls('[WEATHER:{"word":"fair"}] The sky clears.', live);
+  assert.equal(shouted.calls.length, 1, "a verb tag the GM shouted is the same verb");
+  assert.deepEqual(shouted.calls[0]!.args, { word: "fair" });
+
+  // Why the tag pattern is EXPORTED from the conversation-command registry rather than rewritten
+  // here: a JSON payload may itself contain `]`, and the shared grammar matches a `{…}` brace run
+  // before falling back to bracket-free text. A private `[^\]]*` parse would stop at the inner
+  // bracket, match nothing, and leave the tag in the player's prose.
+  const bracketPayload = parseAndStripGmVerbCalls('[standing:{"npc":"Mira]Tam","stance":"friend"}] Then.', live);
+  assert.equal(bracketPayload.calls.length, 1, "a `]` inside a JSON payload must not end the tag");
+  assert.deepEqual(bracketPayload.calls[0]!.args, { npc: "Mira]Tam", stance: "friend" });
+  assert.equal(bracketPayload.content.trim(), "Then.");
 
   // One call per verb name per message. Both tags go, one call survives — a real ceiling, not a
   // formality: a repeated event verb is meaningful prose this cut collapses.
@@ -444,18 +518,35 @@ try {
   // Nothing durable: the event verb wrote no metadata key of its own.
   assert.equal("standing" in (await readMetadata(chatId)), false);
 
-  // A stream the client has already dropped: no frame, no throw, and the claim still records that
-  // the Engine executed the verb — which is true whether or not anyone heard it.
+  // A stream the client has already dropped. Three things at once, and all three are the design: no
+  // frame, no throw, and one warn — the ONLY trace a lost event verb ever leaves, so it is asserted
+  // rather than described — plus a claim that still records the Engine executed the verb, which is
+  // true whether or not anyone heard it. Claiming only on delivery would be the tempting change, and
+  // it is what this pins against.
   const deadReply = createReplyDouble({ writable: false });
   const deadMessage = await chats.createMessage({ chatId, role: "assistant", content: "Lost turn." });
-  await executeGmVerbCalls({
-    calls: [{ verb: standingVerb, args: { npc: "Tam", stance: "friend" } }],
-    table: live,
-    turn: { chatId, messageId: deadMessage!.id, swipeIndex: 0 },
-    store: chats,
-    reply: deadReply.reply,
-  });
+  const lostWarnings = await captureWarnings(() =>
+    executeGmVerbCalls({
+      calls: [{ verb: standingVerb, args: { npc: "Tam", stance: "friend" } }],
+      table: live,
+      turn: { chatId, messageId: deadMessage!.id, swipeIndex: 0 },
+      store: chats,
+      reply: deadReply.reply,
+    }),
+  );
   assert.deepEqual(deadReply.frames, [], "an unwritable reply delivers nothing");
+  assert.equal(
+    lostWarnings.filter((line) => line.includes("was not delivered")).length,
+    1,
+    "a lost event verb must leave exactly one warn — nothing else records that the effect vanished",
+  );
+  const deadSwipes = await chats.getSwipes(deadMessage!.id);
+  const deadExtra = deadSwipes.find((swipe: { index: number }) => swipe.index === 0)!.extra as string | null;
+  assert.equal(
+    typeof JSON.parse(deadExtra ?? "{}")["gmVerb:standing"],
+    "object",
+    "the claim records execution, not delivery, so it is written even when the frame was lost",
+  );
 
   // ── Isolation, and the paths with no message to claim against ──────────────
 
@@ -556,6 +647,35 @@ try {
     generateRoute,
     /if \(chatMode === "game" && !input\.impersonate && fullResponse\) \{/,
     "the GM verb scan must run on its own game-mode-only path",
+  );
+
+  // The next three are SOURCE-TEXT pins, and named as such: the execution site lives inside a
+  // several-thousand-line Fastify handler that no regression can drive, so a grep of the guard is the
+  // honest option rather than a claim to have exercised it. Each one is a behavior that survives
+  // being deleted otherwise.
+  //
+  // A stopped turn changes nothing. Policy for the state half; forced for the event half, where the
+  // client has already dropped the stream and the frame would evaporate unlogged.
+  assert.match(
+    generateRoute,
+    /collectedGmVerbCalls\.length > 0 && gmVerbTable && !abortController\.signal\.aborted/,
+    "GM verb execution must be skipped on an aborted turn",
+  );
+  // The committed-write signal. Without this frame a state verb's write never reaches the package
+  // until the chat is reopened — props re-delivery after the refetch IS the delivery mechanism, and
+  // there is no second event carrying the value.
+  assert.match(
+    generateRoute,
+    /data: \{ source: "gm_verb", packageId: gmVerbTable\.packageId \}/,
+    "a committed GM verb write must emit metadata_patch so the package's props re-deliver",
+  );
+  // D9: one resolution per turn, threaded to both the prompt render and the post-save parse. Two
+  // resolutions could disagree — a package updated mid-turn, a table that stops verifying — and the
+  // reminder would then advertise a verb the parser no longer matches, leaving a raw tag in the prose.
+  assert.match(
+    generateRoute,
+    /if \(gmVerbTableResolved\) return gmVerbTable;\s*\n\s*gmVerbTableResolved = true;/,
+    "the verb table must resolve at most once per turn",
   );
 
   const useGenerate = readFileSync(join(repositoryRoot, "packages/client/src/hooks/use-generate.ts"), "utf8");

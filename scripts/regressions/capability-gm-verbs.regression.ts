@@ -901,11 +901,12 @@ assert.equal(
 // ── Who consumes the declaration ─────────────────────────────────────────────
 
 // The schema shipped inert; the runtime landed behind it. The list is pinned rather than dropped,
-// because it is what keeps the declaration contract from acquiring a consumer quietly: every reader
-// has to honor the same reserved-name and key-ownership guards, so a new name here is a new place
-// those guards can be forgotten. The match is on the FILE NAME rather than on an import statement,
-// which deliberately catches a file that only mentions the schema in a comment as well as one that
-// imports it — either way someone has taken a dependency on this contract worth reviewing.
+// because it is what keeps the declaration contract from acquiring a READER quietly: every reader has
+// to honor the same reserved-name and key-ownership guards, so a new name here is a new place those
+// guards can be forgotten. Exactly one entry below is not a reader — the shared barrel, which
+// re-exports the module and enforces nothing. It is listed because the sweep matches on the FILE NAME
+// rather than on an import statement, deliberately, so that a file merely naming the schema in a
+// comment is caught alongside one that imports it. Either way the addition is worth a reviewer's eye.
 const importers = [...serverSourceFiles, ...sharedSourceFiles, ...clientSourceFiles]
   .filter((file) => !file.path.endsWith("gm-verb-table.schema.ts") && file.source.includes("gm-verb-table"))
   .map((file) => file.path.slice(repositoryRoot.length).replace(/\\/g, "/"))
