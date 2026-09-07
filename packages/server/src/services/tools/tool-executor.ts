@@ -508,7 +508,10 @@ function rollDice(args: Record<string, unknown>): Record<string, unknown> {
   }
 
   const { rolls, modifier, total } = rollParsedDice(parsed);
-  const sum = total - modifier;
+  // Sum the dice directly: reconstructing it as total - modifier re-derives it
+  // through float arithmetic, and at safe-integer-boundary modifiers the
+  // subtraction can come back one off from the dice actually rolled.
+  const sum = rolls.reduce((a, b) => a + b, 0);
 
   return {
     notation: parsed.notation,

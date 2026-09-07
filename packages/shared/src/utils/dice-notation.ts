@@ -1,8 +1,10 @@
 // ──────────────────────────────────────────────
 // Dice Notation — the one NdM grammar
 //
-// Every dice reader in the engine parses through
-// this module. Before it existed the tool executor,
+// The tool executor, the /roll service, the GM
+// skill-check tag and the client slash roller all
+// parse through this module (the {{roll}} macro and
+// the dice card's display parser keep their own). Before it existed the tool executor,
 // the /roll service, the GM skill-check tag and the
 // client slash roller each carried their own regex,
 // and they disagreed: bare "d20" was legal in three

@@ -137,6 +137,17 @@ async function rollThroughTool(notation: string): Promise<Record<string, unknown
   return JSON.parse(result.result) as Record<string, unknown>;
 }
 
+
+// The sum is the dice as thrown, never re-derived through the modifier: at the
+// safe-integer boundary, total - modifier floats one off from the die it rolled.
+// Forty throws so a single lucky exact subtraction cannot green a regression.
+for (let i = 0; i < 40; i++) {
+  const boundary = await rollThroughTool(`1d6+${Number.MAX_SAFE_INTEGER}`);
+  const rolls = boundary.rolls as number[];
+  assert.ok(Array.isArray(rolls) && rolls.length === 1, "the boundary roll throws one die");
+  assert.equal(boundary.sum, rolls[0], "the reported sum is the die actually rolled");
+}
+
 for (const testCase of CASES) {
   const result = await rollThroughTool(testCase.notation);
 
