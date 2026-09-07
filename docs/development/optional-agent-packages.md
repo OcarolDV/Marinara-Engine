@@ -258,8 +258,13 @@ widened when a new parser appears rather than trusted to stay closed. Ordinary-l
 reserved for the same reason — `action`, `state`, `status` and `note` are all built-in tags — so a
 refusal on a plain verb name is usually this rule rather than a typo. The `description` is one line
 of 1–200 characters with no line breaks and no square brackets, because it is rendered verbatim as
-the verb's line in the reminder's `COMMANDS:` block. A verb takes up to six arguments, each
-`{ name, type, enum?, maxLength?, optional? }`, named `[a-z][a-zA-Z0-9_]*` up to 32 characters —
+the verb's line in the reminder's `COMMANDS:` block. Verbatim into the block, but not past the
+reminder's macro pass: the whole reminder is macro-expanded before it is sent, so `{{…}}` inside a
+description is expanded rather than printed — including the macros that _write_ chat variables, such
+as `{{setvar::…}}`. That is no more reach than the `chat-write` permission already grants a package,
+but it is easy to trip into by accident, so keep macro braces out of a description unless you mean
+them. A verb takes up to six arguments, each `{ name, type, enum?, maxLength?, optional? }`, named
+`[a-z][a-zA-Z0-9_]*` up to 32 characters —
 deliberately wider than a verb name, which allows no uppercase, because an argument name is a JSON
 key rather than a bracket tag. Only a string argument may carry an `enum` (1–16 values); a string
 argument _without_ an enum must declare `maxLength` (1–500), since the executor's scoped parse

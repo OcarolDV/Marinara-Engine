@@ -3762,6 +3762,12 @@ export async function generateRoutes(app: FastifyInstance) {
               experienceProvidedSystems: capabilityPromptContext.provides,
               // A package that declares GM verbs gets one COMMANDS line each. No package declares a
               // table today, so this renders nothing and the reminder is byte-identical.
+              //
+              // No impersonate guard here, while the scan below has one: an impersonated turn is
+              // shown the verb vocabulary and nothing parses it back out. That asymmetry is the
+              // shipped behavior for every built-in GM tag — this reminder renders them on an
+              // impersonated turn too, and their parse is `!input.impersonate` as well — so the verbs
+              // follow it rather than inventing a second rule for the same prompt.
               experienceGmVerbs: gmVerbTableForPrompt ? renderGmVerbInstructions(gmVerbTableForPrompt) : undefined,
               playerInventory: (() => {
                 try {
