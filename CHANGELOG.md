@@ -81,6 +81,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ### Fixed
 
+- A Game turn that leaves no story text behind no longer blanks the narration panel (#5798). When the GM's reply was nothing but actions, or the game saved one of its hidden bookkeeping rows, the panel dropped the scene you were reading and fell back to its empty "send an action to begin the scene" state. The last turn you can actually read now stays on screen and the turn passes silently, the way a command-only turn already does in Conversation.
+
 - Restored Character Editor sections to the same desktop topbar row as the name, avatar, and actions. Editor section buttons adapt their size and spacing before falling back to the existing compact menu on narrow layouts (#5905).
 
 - Professor Mari's shell sandbox closes its two remaining supply-chain gaps (#5892). Installed-package folders (`node_modules` and the pnpm stores, nested ones included) are now read-only inside the sandbox - a command can no longer plant ready-made package code there - while build-tool cache folders inside them stay writable so builds keep working. And stopping a sandboxed command now takes its whole process tree with it, so a background process it left behind can no longer keep writing after the safety scan has run.
