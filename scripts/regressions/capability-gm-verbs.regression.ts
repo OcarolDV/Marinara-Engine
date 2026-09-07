@@ -898,17 +898,27 @@ assert.equal(
   1,
 );
 
-// ── PR1a is inert ────────────────────────────────────────────────────────────
+// ── Who consumes the declaration ─────────────────────────────────────────────
 
-// The runtime lands separately. Until it does, nothing in the Engine may import this schema —
-// otherwise "no behavior change" stops being checkable by reading the diff.
-const importers = [...serverSourceFiles, ...sharedSourceFiles, ...clientSourceFiles].filter(
-  (file) => !file.path.endsWith("gm-verb-table.schema.ts") && file.source.includes("gm-verb-table"),
-);
+// The schema shipped inert; the runtime landed behind it. The list is pinned rather than dropped,
+// because it is what keeps the declaration contract from acquiring a consumer quietly: every reader
+// has to honor the same reserved-name and key-ownership guards, so a new name here is a new place
+// those guards can be forgotten. The match is on the FILE NAME rather than on an import statement,
+// which deliberately catches a file that only mentions the schema in a comment as well as one that
+// imports it — either way someone has taken a dependency on this contract worth reviewing.
+const importers = [...serverSourceFiles, ...sharedSourceFiles, ...clientSourceFiles]
+  .filter((file) => !file.path.endsWith("gm-verb-table.schema.ts") && file.source.includes("gm-verb-table"))
+  .map((file) => file.path.slice(repositoryRoot.length).replace(/\\/g, "/"))
+  .sort();
 assert.deepEqual(
-  importers.map((file) => file.path.slice(repositoryRoot.length).replace(/\\/g, "/")),
-  [],
-  "the GM verb schema ships ahead of its runtime and must have no Engine importers yet",
+  importers,
+  [
+    // Names the file in its header; consumes the symbols through @marinara-engine/shared.
+    "packages/server/src/services/capability-packages/capability-gm-verb-runtime.service.ts",
+    // The barrel re-export — the only file that reaches the schema by path.
+    "packages/shared/src/index.ts",
+  ].sort(),
+  "the GM verb declaration contract has exactly these consumers",
 );
 
 console.info("Capability GM verb declaration regressions passed.");
