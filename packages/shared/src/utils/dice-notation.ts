@@ -3,12 +3,13 @@
 //
 // The tool executor, the /roll service, the GM
 // skill-check tag and the client slash roller all
-// parse through this module (the {{roll}} macro and
-// the dice card's display parser keep their own). Before it existed the tool executor,
-// the /roll service, the GM skill-check tag and the
-// client slash roller each carried their own regex,
-// and they disagreed: bare "d20" was legal in three
-// of them and an error in the fourth.
+// parse through this module. Display-only parsers
+// keep their own: the {{roll}} macro, the dice
+// card's, and the narration badge formatter's.
+// Before this module existed, those four command
+// readers each carried their own regex, and they
+// disagreed: bare "d20" was legal in three of them
+// and an error in the fourth.
 // ──────────────────────────────────────────────
 
 import type { DiceRollResult } from "../types/game.js";
