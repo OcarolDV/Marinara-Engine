@@ -4,6 +4,7 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Dice notation is now read by one shared grammar everywhere instead of four private copies, so the `roll_dice` tool accepts a bare `d20` like the rest of the app already did.
 - Added a storage API that lets a downloaded capability package register and persist its own file tables, with strict table-name validation. No caller is wired to it yet.
 - Removed the unfinished Slurp creator-feed material from the Noodle guides.
 - Updated the timeout reference in `.env.example` to use Slurp consistently.
