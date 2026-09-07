@@ -29,6 +29,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import {
   camelCaseCapabilityPackageId,
   createGmVerbTableSchema,
@@ -45,9 +46,61 @@ import { CHAT_PRESET_EXCLUDED_METADATA_KEYS } from "../../packages/shared/src/ty
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 
 /** Comments are stripped before every sweep below: a bracket tag inside a doc comment
- *  (`[some_tag: …]`, `"[tagPrefix:"`) is prose about the parser, not vocabulary it handles. */
-function withoutComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
+ *  (`[some_tag: …]`, `"[tagPrefix:"`) is prose about the parser, not vocabulary it handles.
+ *
+ *  The stripper is the TypeScript compiler's own parser, because nothing short of a parser can do
+ *  this correctly. Whether a `/` opens a comment, opens a regex or divides is not a lexical property
+ *  of the two characters — it depends on the grammar around them — so every hand scan gets it wrong
+ *  in both directions, and the one this replaced got it wrong in both: `/[/*]/` opened a block
+ *  comment and ate the source through to the next `*` + `/` anywhere in the file, `/[//]/` and a
+ *  regex ending `\//` each ate the rest of their own line, and a `'` inside a character class
+ *  desynced the walk into treating live code as string body and skipping real comments inside it.
+ *  Twenty-nine files across the sweep corpus came out wrong one of those two ways. Source deleted
+ *  before a sweep reads it — or prose left in front of one — is exactly the vacuous narrowing this
+ *  file exists to catch: a sweep reading less than it claims to, and passing because what it should
+ *  have found went missing before it looked. So the parse IS the strip: every token's leading and
+ *  trailing comment ranges, spliced out. Across the 1,337 swept files it removes 22,423 ranges, every
+ *  one a well-formed comment, none overlapping a string, template or regex literal.
+ *
+ *  `fileName` is how the parser is told which dialect to read, and neither dialect is safe as a
+ *  blanket default — `createSourceFile` takes it off the extension. Read as TSX, the `<{ Params: … }>`
+ *  type argument on `app.get` in `game.routes.ts` parses as JSX and hides 313 of that file's 665
+ *  comments; read as TS, the JSX in `markdown.tsx` hides 23 of its 105. Both are files swept below.
+ *  Callers holding a path pass it; the synthetic fixtures take the default.
+ *
+ *  String literals are kept verbatim, as before, because Pin 1 reads bracket tags out of them and the
+ *  metadata sweep strips them itself. */
+function withoutComments(source: string, fileName = "sweep.ts"): string {
+  const parsed = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, /* setParentNodes */ false);
+  const comments: ts.CommentRange[] = [];
+  const started = new Set<number>();
+  const collect = (found: ts.CommentRange[] | undefined) => {
+    // A comment trailing one token is the leading trivia of the next, so it arrives twice. Both
+    // halves are needed: a comment on the same line as the code before it is trailing-only, and one
+    // on its own line is leading-only.
+    for (const range of found ?? []) {
+      if (started.has(range.pos)) continue;
+      started.add(range.pos);
+      comments.push(range);
+    }
+  };
+  const walk = (node: ts.Node) => {
+    for (const child of node.getChildren(parsed)) {
+      collect(ts.getLeadingCommentRanges(source, child.pos));
+      collect(ts.getTrailingCommentRanges(source, child.end));
+      walk(child);
+    }
+  };
+  walk(parsed);
+  comments.sort((left, right) => left.pos - right.pos);
+  let out = "";
+  let index = 0;
+  for (const comment of comments) {
+    if (comment.pos < index) continue;
+    out += source.slice(index, comment.pos);
+    index = comment.end;
+  }
+  return out + source.slice(index);
 }
 
 /** The chat-metadata route path, kept alive through the strip below. It carries no quote, brace,
@@ -60,8 +113,8 @@ const CHAT_METADATA_ROUTE_MARKER = '"@chatMetadataRoute"';
  *  literal survives as a marker rather than as `""`: the direct-PATCH arm recognizes its calls by
  *  their URL (`PATCH /chats/:id/metadata`) and nothing else on the line tells them apart from any
  *  other `api.patch`, so erasing the path would erase the arm. */
-function withoutCommentsOrStrings(source: string): string {
-  return withoutComments(source).replace(
+function withoutCommentsOrStrings(source: string, fileName?: string): string {
+  return withoutComments(source, fileName).replace(
     /"(?:[^"\\\r\n]|\\.)*"|'(?:[^'\\\r\n]|\\.)*'|`(?:[^`\\]|\\.)*`/g,
     (literal) => (/^.\/chats\/[^\s]*\/metadata.$/.test(literal) ? CHAT_METADATA_ROUTE_MARKER : '""'),
   );
@@ -94,25 +147,56 @@ const serverSourceFiles = readSourceFiles("packages/server/src");
 const sharedSourceFiles = readSourceFiles("packages/shared/src");
 const clientSourceFiles = readSourceFiles("packages/client/src");
 
-// ── Pin 1: reserved GM tag names ─────────────────────────────────────────────
+// ── The comment strip both pins read through ─────────────────────────────────
 
-const groupOpeners = /(?:\((?:\?(?:[:!=]|<[=!]|<[A-Za-z_$][\w$]*>))?)*/y;
-const tagIdentifier = /[A-Za-z_][A-Za-z0-9_-]*/y;
-/** The `|` opening the next alternation branch, plus whatever regex noise sits between it and the
- *  branch just read: a trailing group, a quantifier, a colon, or spaces on either side.
- *  `\[(main|whisper(?::[^\]]+)?|thought)\]` names three tags, and a walk that stops at the group
- *  finds two — a truncation that reads as a narrower pin rather than as a failure, which is why the
- *  synthetic fixture below puts the group-carrying branch in the MIDDLE of its alternation. THREE
- *  shapes stay out of reach and are left that way, each ending the walk at the branch before it:
- *  a backslash escape inside a branch name (`\[(alpha|be\-ta|gamma)\]` yields `alpha`, `be`), a
- *  brace quantifier (`\[(one|two{2}|three)\]` yields `one`, `two`) and a character class
- *  (`\[(one|two[ab]|three)\]`, the same). Only the escape is hard to step over: letting the
- *  IDENTIFIER span escapes makes it swallow a closing `\]` and invent names like `party-turn]`. The
- *  other two are simply unneeded — every alternation branch in the five swept parsers is a plain
- *  identifier (`main|side|extra|action|thought|whisper`, `music|sfx|bg|ambient`, `Note|Book`), and a
- *  walk widened to step over all three finds not one extra name in any of them. The truncation is
- *  documented rather than papered over. */
-const tagAlternation = /(?:\((?:[^()\\]|\\.)*\)|[?*+]|:|\s)*\|\s*/y;
+// The strip's own behavior, on a synthetic source, because every sweep below sees only what it
+// returns. Neither a `/*` inside a string literal nor one inside a regex literal is a comment
+// opener, and both of the hand scans this replaced read one or the other as one. Both shapes ship:
+// sixty-seven string literals across the swept files carry `/*`, from `"image/*"` on a file input to
+// the bot-browser `Accept` headers and route globs, and the first regex strip ate 2,456 lines of live
+// source out of 131 of them; the hand scan that fixed THAT still read a regex literal's contents as
+// comment openers, and `/^https?:\/\//i`, `/^models\//` and their kin ate the rest of their lines
+// across nineteen more. Source deleted before a sweep reads it is exactly the vacuous narrowing this
+// file exists to catch, so the strip is pinned in both directions: the literals survive with the code
+// after them, and real comments still vanish.
+const strippedFixture = withoutComments(
+  [
+    'api.get("/assets/*", handler); // [trailing_tag: prose]',
+    "const kept = parseChatMetadata(chat.metadata).scenario;",
+    "/* [block_tag: prose] */",
+    "  // [line_tag: prose]",
+    "const blockish = /[/*]/;",
+    "const afterBlockish = blockishSurvivor;",
+    "const lineish = /[//]/;",
+    "const afterLineish = lineishSurvivor;",
+    "const tailing = /path\\//;",
+    "const afterTailing = tailingSurvivor;",
+  ].join("\n"),
+);
+assert.match(strippedFixture, /"\/assets\/\*"/, "a string literal carrying /* is not a comment opener");
+assert.match(
+  strippedFixture,
+  /const kept = parseChatMetadata\(chat\.metadata\)\.scenario;/,
+  "the source after such a literal survives the strip",
+);
+// A regex literal is not a comment opener either, in any of the three shapes that used to break the
+// scan: `/*` inside a character class (which opened a block comment and ate everything through to the
+// next close, here the whole rest of the fixture), `//` inside one, and an escaped slash immediately
+// before the closing delimiter (which ate the line tail). Each is pinned with the statement after it,
+// because losing the survivor is how the damage actually shows up in a sweep.
+for (const [literal, survivor] of [
+  ["/[/*]/", "blockishSurvivor"],
+  ["/[//]/", "lineishSurvivor"],
+  ["/path\\//", "tailingSurvivor"],
+] as const) {
+  assert.ok(strippedFixture.includes(literal), `a regex literal carrying a comment opener survives (${literal})`);
+  assert.ok(strippedFixture.includes(survivor), `the source after such a regex survives the strip (${survivor})`);
+}
+for (const prose of ["trailing_tag", "block_tag", "line_tag"]) {
+  assert.ok(!strippedFixture.includes(prose), `a real comment still vanishes (${prose})`);
+}
+
+// ── Pin 1: reserved GM tag names ─────────────────────────────────────────────
 
 /** Every bracket-tag name a parser matches, walking the alternation groups the dialogue tokens
  *  live in: `\[(main|side|extra|action|thought|whisper(?::…)?)\]` names six tags, and a scan that
@@ -120,6 +204,26 @@ const tagAlternation = /(?:\((?:[^()\\]|\\.)*\)|[?*+]|:|\s)*\|\s*/y;
  *  bracket there is a `(`. An opener is an escaped bracket inside a regex literal or a bracket at
  *  the head of a string literal. */
 function bracketTagNames(source: string): Set<string> {
+  // All three walk regexes are sticky, so each carries a `lastIndex` the walk below rewrites between
+  // every step. They are built per call rather than once beside the function so that position state
+  // belongs to one invocation and cannot be inherited from — or left behind for — another.
+  const groupOpeners = /(?:\((?:\?(?:[:!=]|<[=!]|<[A-Za-z_$][\w$]*>))?)*/y;
+  const tagIdentifier = /[A-Za-z_][A-Za-z0-9_-]*/y;
+  /** The `|` opening the next alternation branch, plus whatever regex noise sits between it and the
+   *  branch just read: a trailing group, a quantifier, a colon, or spaces on either side.
+   *  `\[(main|whisper(?::[^\]]+)?|thought)\]` names three tags, and a walk that stops at the group
+   *  finds two — a truncation that reads as a narrower pin rather than as a failure, which is why the
+   *  synthetic fixture below puts the group-carrying branch in the MIDDLE of its alternation. THREE
+   *  shapes stay out of reach and are left that way, each ending the walk at the branch before it:
+   *  a backslash escape inside a branch name (`\[(alpha|be\-ta|gamma)\]` yields `alpha`, `be`), a
+   *  brace quantifier (`\[(one|two{2}|three)\]` yields `one`, `two`) and a character class
+   *  (`\[(one|two[ab]|three)\]`, the same). Only the escape is hard to step over: letting the
+   *  IDENTIFIER span escapes makes it swallow a closing `\]` and invent names like `party-turn]`. The
+   *  other two are simply unneeded — every alternation branch in the five swept parsers is a plain
+   *  identifier (`main|side|extra|action|thought|whisper`, `music|sfx|bg|ambient`, `Note|Book`), and a
+   *  walk widened to step over all three finds not one extra name in any of them. The truncation is
+   *  documented rather than papered over. */
+  const tagAlternation = /(?:\((?:[^()\\]|\\.)*\)|[?*+]|:|\s)*\|\s*/y;
   const names = new Set<string>();
   for (const opener of source.matchAll(/(?:\\\[|["'`]\[)/g)) {
     let index = (opener.index ?? 0) + opener[0].length;
@@ -149,7 +253,7 @@ for (const file of [
   "packages/server/src/services/game/gm-prompts.ts",
   "packages/server/src/services/game/party-prompts.ts",
 ]) {
-  for (const match of withoutComments(sourceOf(file)).matchAll(/\[([A-Za-z_][A-Za-z0-9_]*)\s*:/g)) {
+  for (const match of withoutComments(sourceOf(file), file).matchAll(/\[([A-Za-z_][A-Za-z0-9_]*)\s*:/g)) {
     reminderTags.add(match[1]!.toLowerCase());
   }
 }
@@ -178,7 +282,7 @@ for (const file of [
   "packages/server/src/services/sidecar/scene-analyzer.ts",
   "packages/server/src/routes/generate/generate-route-utils.ts",
 ]) {
-  for (const name of bracketTagNames(withoutComments(sourceOf(file)))) parserTags.add(name);
+  for (const name of bracketTagNames(withoutComments(sourceOf(file), file))) parserTags.add(name);
 }
 
 assert.ok(reminderTags.size >= 15, `the GM reminder sweep found only ${reminderTags.size} tags; the extractor broke`);
@@ -325,9 +429,17 @@ const returnedObject = /\breturn\s*\{/y;
 
 /** A JS identifier may contain `$`, and a call target swept below may contain `.`; both are regex
  *  metacharacters, and an unescaped `$` would silently turn the pattern into one that never
- *  matches — narrowing a sweep without failing anything. */
+ *  matches — narrowing a sweep without failing anything.
+ *
+ *  The domain is dotted identifier paths, where `.` and `$` are the only metacharacters that can
+ *  occur, but the escape is TOTAL — every regex metacharacter, backslash included — so that no
+ *  future caller can narrow a sweep by handing this a name from a wider domain. A partial escaper
+ *  is only ever correct for the callers it was written against, and it fails silently for the rest:
+ *  the pattern still compiles, it just stops matching. Escaping the backslash first is what makes
+ *  the set complete rather than merely longer — an escaper that rewrote `.` but passed `\` through
+ *  would turn a name ending in a backslash into a pattern that escapes the boundary after it. */
 function escapedForPattern(name: string): string {
-  return name.replace(/[.$]/g, "\\$&");
+  return name.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
 }
 
 /** Keys of every object literal the block body at `open` returns AT ITS OWN LEVEL. Nested function
@@ -532,7 +644,7 @@ function parseChatMetadataReadKeys(source: string): string[] {
 let unreadableWriteCalls = 0;
 const unreadableWriteSites: string[] = [];
 for (const file of [...serverSourceFiles, ...sharedSourceFiles, ...clientSourceFiles]) {
-  const source = withoutCommentsOrStrings(file.source);
+  const source = withoutCommentsOrStrings(file.source, file.path);
   const written = metadataWriteKeys(source);
   const routed = metadataRouteWriteKeys(source);
   for (const key of [...written.keys, ...routed.keys]) engineMetadataKeys.add(key);
@@ -660,7 +772,13 @@ assert.deepEqual(
 assert.equal(
   unreadableWriteCalls,
   20,
-  `chat-metadata writes this sweep cannot read statically changed: ${unreadableWriteSites.join(", ")}`,
+  `chat-metadata writes this sweep cannot read statically changed: expected 20, found ${unreadableWriteCalls}. ` +
+    "This count is a boundary marker, not a budget, so do not simply edit the number to match. Read the " +
+    "call this added by hand — the sites are listed below — and decide what it writes: if it commits a key " +
+    "under a namespace that is not already in ENGINE_OWNED_METADATA_KEY_PREFIXES, add that namespace (or " +
+    "widen the walk that should have read the call), because until then a package can squat it. If the " +
+    "call is genuinely unreadable and squats nothing, bump this number deliberately and say in the commit " +
+    `which call it accounts for. Sites: ${unreadableWriteSites.join(", ")}`,
 );
 
 const ownedPrefixes = new Set<string>(ENGINE_OWNED_METADATA_KEY_PREFIXES);
@@ -771,6 +889,16 @@ refusesVerb({ ...weatherVerb, name: "party-turn" }, "a hyphenated verb name is r
 refusesVerb({ ...weatherVerb, description: "Line one.\nLine two." }, "a prompt line cannot break");
 refusesVerb({ ...weatherVerb, description: "Emit [weather: …] here." }, "a prompt line cannot carry brackets");
 refusesVerb({ ...weatherVerb, description: "" }, "a verb must describe itself");
+// CR and LF are not the whole break vocabulary, and a control character reshapes the rendered line
+// without ending it — a tab walks the next verb out of the column the COMMANDS block is read in.
+refusesVerb(
+  { ...weatherVerb, description: "Line one.\u2028Line two." },
+  "a Unicode line separator breaks the prompt line too",
+);
+refusesVerb(
+  { ...weatherVerb, description: "Set the sky.\tThen stop." },
+  "a tab is refused as a control character",
+);
 refusesVerb({ ...weatherVerb, metadataKey: undefined }, "a state verb must name its metadata key");
 refusesVerb({ ...standingVerb, metadataKey: "pixelforgeStanding" }, "an event verb must not squat a key");
 refusesVerb({ ...weatherVerb, effect: "broadcast" }, "an unknown effect is refused");
@@ -790,6 +918,10 @@ refusesVerb(
 refusesVerb(
   { ...weatherVerb, args: [{ name: "word", type: "string", enum: ["fair"], maxLength: 10 }] },
   "an enum already bounds the value",
+);
+refusesVerb(
+  { ...weatherVerb, args: [{ name: "word", type: "string", enum: ["fair", "fair"] }] },
+  "a value set cannot repeat a value",
 );
 refusesVerb(
   {

@@ -312,6 +312,22 @@ export const gmVerbArgSchema = gmVerbArgBaseSchema.superRefine((arg, ctx) => {
       message: "A string argument without an enum must declare maxLength",
     });
   }
+  // The other closed lists here — verb names, argument names, metadata keys — all refuse a repeat,
+  // and a value set is no different: membership is a set, so a duplicate buys the vocabulary
+  // nothing and reads as a typo in the one place a package spells its argument's values out.
+  if (arg.enum) {
+    const values = new Set<string>();
+    for (const [index, value] of arg.enum.entries()) {
+      if (values.has(value)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["enum", index],
+          message: `Duplicate enum value "${value}"`,
+        });
+      }
+      values.add(value);
+    }
+  }
 });
 
 const gmVerbBaseSchema = z
@@ -347,11 +363,22 @@ function refineGmVerb(verb: z.infer<typeof gmVerbBaseSchema>, ctx: z.RefinementC
   }
   // The description is a prompt line. A line break or a bracket would split the COMMANDS block or
   // take the shape of another tag, so both are refused at declaration rather than rendered.
-  if (/[\r\n]/.test(verb.description)) {
+  // CR and LF are not the whole break vocabulary: NEL (U+0085) and the Unicode line and paragraph
+  // separators (U+2028, U+2029) end a line for anything that reads the rendered block back, and the
+  // C0 controls reshape it without ending a line at all — a tab is the one a package is likeliest to
+  // reach for, and it walks the next verb's line out of the column the block is read in.
+  if (/[\r\n\u0085\u2028\u2029]/.test(verb.description)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["description"],
       message: "A verb description is one prompt line and cannot contain line breaks",
+    });
+  }
+  if (/[\u0000-\u001F\u007F]/.test(verb.description)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["description"],
+      message: "A verb description cannot contain control characters",
     });
   }
   if (/[[\]]/.test(verb.description)) {

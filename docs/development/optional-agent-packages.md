@@ -257,22 +257,26 @@ swept set, or spelled in a shape the extractor cannot read, would still be misse
 widened when a new parser appears rather than trusted to stay closed. Ordinary-looking words are
 reserved for the same reason — `action`, `state`, `status` and `note` are all built-in tags — so a
 refusal on a plain verb name is usually this rule rather than a typo. The `description` is one line
-of 1–200 characters with no line breaks and no square brackets, because it is rendered verbatim into
-the verb's line in the reminder's `COMMANDS:` block. Verbatim into the block, but not past the
-reminder's macro pass: the whole reminder is macro-expanded before it is sent, so `{{…}}` inside a
-description is expanded rather than printed — including the macros that _write_ chat variables, such
-as `{{setvar::…}}`. That is no more reach than the `chat-write` permission already grants a package,
+of 1–200 characters with no square brackets and no line breaks, because it is rendered verbatim into
+the verb's line in the reminder's `COMMANDS:` block. "Line break" there is wider than CR and LF: it
+counts `U+0085`, `U+2028` and `U+2029`, which end a line for anything that reads the block back, and
+the description is refused for the C0 controls and DEL too — a tab being the likeliest — since those
+reshape the block without ending a line at all. Verbatim into the block, but not past the reminder's
+macro pass: the whole reminder is macro-expanded before it is sent, so `{{…}}` inside a description
+is expanded rather than printed — including the macros that _write_ chat variables, such as
+`{{setvar::…}}`. That is no more reach than the `chat-write` permission already grants a package,
 but it is easy to trip into by accident, so keep macro braces out of a description unless you mean
 them. A verb takes up to six arguments, each `{ name, type, enum?, maxLength?, optional? }`, named
 `[a-z][a-zA-Z0-9_]*` up to 32 characters —
 deliberately wider than a verb name, which allows no uppercase, because an argument name is a JSON
-key rather than a bracket tag. Only a string argument may carry an `enum` (1–16 values); a string
-argument _without_ an enum must declare `maxLength` (1–500), since the executor's scoped parse
-inherits no ceiling of its own and an uncapped free-text argument would invite a whole narration
-fragment into the package; and an argument carrying both an `enum` and a `maxLength` is refused,
-because the enum already bounds the value. Payloads are flat, single-line JSON — a nested `}` ends
-the tag match early — and one instance per verb name per message is parsed, so a repeated verb in
-one narration is applied once.
+key rather than a bracket tag. Only a string argument may carry an `enum` (1–16 values, which must
+be distinct — a repeated value adds nothing to a set, and is refused like every other duplicate in a
+verb table); a string argument _without_ an enum must declare `maxLength` (1–500), since the
+executor's scoped parse inherits no ceiling of its own and an uncapped free-text argument would
+invite a whole narration fragment into the package; and an argument carrying both an `enum` and a
+`maxLength` is refused, because the enum already bounds the value. Payloads are flat, single-line
+JSON — a nested `}` ends the tag match early — and one instance per verb name per message is parsed,
+so a repeated verb in one narration is applied once.
 
 You do not have to spell any of that in the description. The reminder line is built from the parsed
 table, so each verb renders as a schematic payload, then the description, then one copyable example:
