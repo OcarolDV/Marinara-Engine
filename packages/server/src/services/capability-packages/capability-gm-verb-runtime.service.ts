@@ -228,7 +228,11 @@ export function parseAndStripGmVerbCalls(content: string, table: ResolvedGmVerbT
   let matched = false;
 
   const stripped = content.replace(createCapabilityCommandTagRegex(), (match, name: string, payload?: string) => {
-    const verb = verbsByName.get(name.toLocaleLowerCase());
+    // `toLowerCase`, matching the map built above and the schema's own folds — deliberately NOT
+    // `toLocaleLowerCase`, which folds "I" to a dotless "ı" under a Turkish/Azeri runtime locale.
+    // The two would then disagree, the lookup would miss, and the verb the reminder advertised would
+    // be left in the player's prose as a raw bracket tag.
+    const verb = verbsByName.get(name.toLowerCase());
     // Not one of this package's verbs — leave it exactly as the model wrote it. It may be a built-in
     // tag another parser owns, or ordinary prose in brackets.
     if (!verb) return match;
