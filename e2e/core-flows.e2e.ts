@@ -5846,6 +5846,11 @@ test("Conversation swipe controls match Roleplay sizing and chat-chrome colors",
             },
             { id: chatId, style: layout, nextTheme: theme },
           );
+          // Theme/chroma reach CSS through an effect. Wait for that update
+          // before capturing expected colors, especially on Linux WebKit.
+          await expect
+            .poll(() => readCssVariableColor(page, "--marinara-chat-chrome-text"))
+            .toBe(theme === "dark" ? "rgb(194, 220, 229)" : "rgb(38, 58, 71)");
           const row = page.locator(`[data-message-id="${messageId}"]`);
           const control = row.locator(".mari-message-swipes");
           await expect(control).toBeVisible();
