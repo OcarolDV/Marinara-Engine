@@ -9,6 +9,7 @@ import {
 import { isDiceNotation, rollDice } from "../../packages/server/src/services/game/dice.service.js";
 import { executeToolCalls } from "../../packages/server/src/services/tools/tool-executor.js";
 import { parseGmTags } from "../../packages/client/src/lib/game-tag-parser.js";
+import { matchSlashCommand, type SlashCommandContext } from "../../packages/client/src/lib/slash-commands.js";
 
 // One NdM grammar, four readers. The engine used to carry four private regexes
 // that disagreed about the most common notation a GM writes: the roll_dice tool
@@ -65,6 +66,9 @@ const CASES: NotationCase[] = [
   { notation: "1d20+3 extra", grammar: false, tool: "invalid", tagRolls: [12], tagLabel: false },
   // Too large to be an exact integer: refused rather than silently clamped.
   { notation: "99999999999999999999d6", grammar: false, tool: "invalid", tagRolls: [3], tagLabel: false },
+  { notation: "1d6+9007199254740992", grammar: false, tool: "invalid", tagRolls: [3], tagLabel: false },
+  { notation: `1d6+${"9".repeat(49)}`, grammar: false, tool: "invalid", tagRolls: [3], tagLabel: false },
+  { notation: `1d6-${"9".repeat(49)}`, grammar: false, tool: "invalid", tagRolls: [3], tagLabel: false },
 ];
 
 // ── Entry 1: the shared grammar ──
@@ -230,5 +234,125 @@ assert.equal(parseRollsNotation("1d20")?.resolvedResult?.dice, "1d20");
 assert.equal(parseRollsNotation("1d20+3")?.resolvedResult?.dice, "1d20");
 assert.equal(parseRollsNotation("1d100")?.resolvedResult, undefined, "only a d20 resolves without a dice label");
 assert.equal(parseRollsNotation("0d20")?.resolvedResult, undefined);
+
+// ── The modifier is held to the same exactness bar as the count and the faces ──
+//
+// The regex puts no ceiling on the modifier's digits. The count and the faces
+// have always been checked with Number.isSafeInteger; the modifier was not, so
+// "1d6+9007199254740992" parsed happily and every reader downstream trusted it.
+// The damage is a wrong number rather than an error: past 2^53 the modifier
+// swallows the die (a rolled 1 came back as a total identical to the modifier),
+// a 49-digit modifier totals to 1e+49, and a long enough one totals to Infinity
+// — which the roll_dice tool serializes to a null total for the model. The
+// refusal belongs in the grammar because no caller re-checks the parsed value.
+
+const FORTY_NINE_NINES = "9".repeat(49);
+
+interface ModifierCase {
+  notation: string;
+  accepted: boolean;
+  note: string;
+}
+
+const MODIFIER_CASES: ModifierCase[] = [
+  { notation: `1d6+${Number.MAX_SAFE_INTEGER}`, accepted: true, note: "the largest exact modifier stays legal" },
+  { notation: `1d6-${Number.MAX_SAFE_INTEGER}`, accepted: true, note: "its negative mirror stays legal" },
+  { notation: `1d6+${Number.MAX_SAFE_INTEGER + 1}`, accepted: false, note: "one past the boundary" },
+  { notation: `1d6-${Number.MAX_SAFE_INTEGER + 1}`, accepted: false, note: "one past the boundary, negative" },
+  { notation: `1d6+${FORTY_NINE_NINES}`, accepted: false, note: "49 digits parses to an imprecise float" },
+  { notation: `1d6-${FORTY_NINE_NINES}`, accepted: false, note: "49 digits, negative" },
+  { notation: `1d6+${"9".repeat(400)}`, accepted: false, note: "long enough to parse as Infinity" },
+];
+
+// The grammar itself.
+for (const testCase of MODIFIER_CASES) {
+  const parsed = parseDiceNotation(testCase.notation);
+  assert.equal(parsed !== null, testCase.accepted, `shared grammar: ${testCase.note}`);
+  assert.equal(sharedIsDiceNotation(testCase.notation), testCase.accepted);
+  if (parsed) {
+    assert.ok(Number.isSafeInteger(parsed.modifier), `an accepted modifier is always exact: ${testCase.note}`);
+  }
+}
+
+// The /roll service. Its bounds policy clamps oversized dice, but an inexact
+// modifier is a grammar refusal, so it throws rather than clamping.
+for (const testCase of MODIFIER_CASES) {
+  if (!testCase.accepted) {
+    assert.throws(() => rollDice(testCase.notation), /Invalid dice notation/, `/roll must refuse: ${testCase.note}`);
+    continue;
+  }
+  const rolled = rollDice(testCase.notation);
+  assert.ok(Number.isSafeInteger(rolled.modifier), `/roll reports an exact modifier: ${testCase.note}`);
+  assert.ok(Number.isFinite(rolled.total), `/roll reports a finite total: ${testCase.note}`);
+}
+
+// The roll_dice tool. A refusal has to reach the model as a rejected notation;
+// the failure this pins is the model being handed a total it cannot use.
+for (const testCase of MODIFIER_CASES) {
+  const result = await rollThroughTool(testCase.notation);
+  if (!testCase.accepted) {
+    assert.match(String(result.error), /^Invalid dice notation/, `roll_dice must refuse: ${testCase.note}`);
+    assert.equal(result.total, undefined, `a refused notation reports no total: ${testCase.note}`);
+    assert.equal(result.rolls, undefined, `a refused notation reports no dice: ${testCase.note}`);
+    continue;
+  }
+  assert.equal(result.error, undefined, `roll_dice must accept: ${testCase.note}`);
+  assert.ok(Number.isFinite(result.total as number), `roll_dice reports a finite total: ${testCase.note}`);
+  assert.equal(result.modifier, parseDiceNotation(testCase.notation)!.modifier);
+  // `sum` is reconstructed as total - modifier, which rounds once the modifier
+  // approaches 2^53, so it is not pinned at this magnitude. Ordinary modifiers
+  // are covered by the CASES sweep above.
+}
+
+// The GM skill-check tag. An unusable modifier must leave the check unresolved
+// — publishing a resolved result would put a number on the card that the GM
+// never rolled.
+for (const testCase of MODIFIER_CASES) {
+  const resolved = parseRollsNotation(testCase.notation.replace("1d6", "1d20"))?.resolvedResult;
+  if (testCase.accepted) {
+    assert.equal(resolved?.dice, "1d20", `an exact modifier still resolves: ${testCase.note}`);
+    continue;
+  }
+  assert.equal(resolved, undefined, `an unusable modifier leaves the check unresolved: ${testCase.note}`);
+}
+
+// ── Entry 5: the client /roll slash command ──
+
+async function rollThroughSlashCommand(notation: string) {
+  const match = matchSlashCommand(`/roll ${notation}`);
+  assert.ok(match, "/roll must stay registered");
+  const posted: Array<{ role: string; content: string; extra?: Record<string, unknown> }> = [];
+  const result = await match.command.execute(match.args, {
+    chatId: "dice-notation-regression",
+    generate: async () => true,
+    createMessage: (data) => {
+      posted.push(data);
+    },
+    invalidate: () => {},
+    characterNames: [],
+  } as unknown as SlashCommandContext);
+  return { result, posted: posted[0] };
+}
+
+// The command still rolls what it always rolled.
+const slashOrdinary = await rollThroughSlashCommand("2d6+3");
+assert.equal(slashOrdinary.result.handled, true);
+assert.ok(slashOrdinary.posted, "an ordinary notation posts a narrator message");
+assert.match(slashOrdinary.posted.content, /^🎲 \*\*2d6\+3\*\* → \*\*\d+\*\*/);
+
+for (const testCase of MODIFIER_CASES) {
+  const { result, posted } = await rollThroughSlashCommand(testCase.notation);
+  assert.equal(result.handled, true, `/roll always handles the command: ${testCase.note}`);
+  if (!testCase.accepted) {
+    assert.equal(posted, undefined, `a refused notation posts nothing: ${testCase.note}`);
+    assert.match(String(result.feedback), /^Invalid dice notation/, `/roll error copy: ${testCase.note}`);
+    continue;
+  }
+  assert.equal(result.feedback, undefined, `an accepted notation needs no error copy: ${testCase.note}`);
+  assert.ok(posted, `an accepted notation posts a roll: ${testCase.note}`);
+  const rolled = (posted.extra as { diceRollResult: { modifier: number; total: number } }).diceRollResult;
+  assert.ok(Number.isSafeInteger(rolled.modifier), `/roll reports an exact modifier: ${testCase.note}`);
+  assert.ok(Number.isFinite(rolled.total), `/roll reports a finite total: ${testCase.note}`);
+}
 
 process.stdout.write("Dice notation regression passed.\n");

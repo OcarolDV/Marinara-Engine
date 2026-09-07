@@ -39,8 +39,8 @@ export interface ParsedDiceNotation {
  * Parse NdM notation.
  *
  * Returns `null` when the text is not dice notation, when it asks for fewer
- * than one die or fewer than one face, or when a count or face value is too
- * large to be an exact integer.
+ * than one die or fewer than one face, or when a count, face or modifier value
+ * is too large to be an exact integer.
  *
  * Ceilings past that are each caller's policy, not the grammar's: this module
  * does not decide whether `500d6` is refused or clamped, because the shipped
@@ -56,7 +56,13 @@ export function parseDiceNotation(value: string): ParsedDiceNotation | null {
   const sidesText = match[2]!;
   const count = Number.parseInt(countText ?? "1", 10);
   const sides = Number.parseInt(sidesText, 10);
-  if (!Number.isSafeInteger(count) || !Number.isSafeInteger(sides)) return null;
+  // The modifier is held to the same exactness bar as the count and the faces.
+  // The regex puts no ceiling on its digits, so "1d6+<49 nines>" parses to an
+  // imprecise float and a long enough one parses to Infinity — either way the
+  // roll's total stops being a number anyone can trust, and a caller that hands
+  // it to a model reports a wrong total rather than a rejected notation.
+  const modifier = match[3] ? Number.parseInt(match[3], 10) : 0;
+  if (!Number.isSafeInteger(count) || !Number.isSafeInteger(sides) || !Number.isSafeInteger(modifier)) return null;
   if (count < 1 || sides < 1) return null;
 
   return {
@@ -64,7 +70,7 @@ export function parseDiceNotation(value: string): ParsedDiceNotation | null {
     dice: `${countText ?? ""}d${sidesText}`.toLowerCase(),
     count,
     sides,
-    modifier: match[3] ? Number.parseInt(match[3], 10) : 0,
+    modifier,
   };
 }
 
