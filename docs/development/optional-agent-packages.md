@@ -257,7 +257,7 @@ swept set, or spelled in a shape the extractor cannot read, would still be misse
 widened when a new parser appears rather than trusted to stay closed. Ordinary-looking words are
 reserved for the same reason — `action`, `state`, `status` and `note` are all built-in tags — so a
 refusal on a plain verb name is usually this rule rather than a typo. The `description` is one line
-of 1–200 characters with no line breaks and no square brackets, because it is rendered verbatim as
+of 1–200 characters with no line breaks and no square brackets, because it is rendered verbatim into
 the verb's line in the reminder's `COMMANDS:` block. Verbatim into the block, but not past the
 reminder's macro pass: the whole reminder is macro-expanded before it is sent, so `{{…}}` inside a
 description is expanded rather than printed — including the macros that _write_ chat variables, such
@@ -273,6 +273,25 @@ fragment into the package; and an argument carrying both an `enum` and a `maxLen
 because the enum already bounds the value. Payloads are flat, single-line JSON — a nested `}` ends
 the tag match early — and one instance per verb name per message is parsed, so a repeated verb in
 one narration is applied once.
+
+You do not have to spell any of that in the description. The reminder line is built from the parsed
+table, so each verb renders as a schematic payload, then the description, then one copyable example:
+
+```
+- [weather:{"word":"fair|overcast|rain|storm|snow","intensity"?:"light|heavy"}] — Set the sky when the weather visibly changes. Example: [weather:{"word":"fair"}]
+```
+
+The schematic is what teaches the vocabulary — every argument in declaration order, optional ones
+marked `"name"?:` outside the JSON string, an enum as the full alternation, an un-enum'd string as
+its cap, and a number or boolean unquoted, since the validator refuses `"3"` for a number rather
+than coercing it. The example is one concrete instance and can only ever show a single enum value,
+which is why it is not the teaching channel: a GM given nothing but `{"word":"fair"}` writes
+"sunny", the validator refuses a word it was never shown, and the refusal is invisible — the tag is
+stripped on the name match rather than on validation success, so the narration reads clean and the
+world simply never changed. Deriving both from the same parsed table is also what stops them
+drifting: a description cannot promise a value the validator refuses, because the description is no
+longer where the values live. Spend the 200 characters on _when_ to use the verb, not on restating
+its arguments.
 
 Degradation is per verb. A verb this Engine cannot use — a newer `effect`, a shape it cannot
 represent, or a declaration it refuses outright such as a reserved name or a key that is not the

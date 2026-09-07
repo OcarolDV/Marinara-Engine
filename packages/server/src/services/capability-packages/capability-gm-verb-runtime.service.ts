@@ -5,6 +5,7 @@ import {
   parseGmVerbTableWithCompat,
   RESERVED_GM_TAG_NAMES,
   type GmVerb,
+  type GmVerbArg,
 } from "@marinara-engine/shared";
 import { isSseReplyWritable, sendSseEvent } from "../../routes/generate/sse.js";
 import { logger } from "../../lib/logger.js";
@@ -141,14 +142,60 @@ export async function resolveGmVerbTable(chatMeta: Record<string, unknown>): Pro
   return { packageId, verbs };
 }
 
-/** One COMMANDS line per verb, in the shape the conversation-command registry already renders, so
- *  the GM sees one consistent grammar rather than two. */
+/** One COMMANDS line per verb, in the shape the conversation-command registry already renders
+ *  (`capability-command-registry.service.ts:74`), so the GM sees one consistent grammar rather than
+ *  two: a schematic payload, the description, then a copyable example.
+ *
+ *  The two payload slots do different jobs and both are load-bearing. The SCHEMATIC teaches the
+ *  vocabulary — every argument, which ones are optional, and for an enum argument the whole closed
+ *  set — while the EXAMPLE is one concrete, parseable instance. Collapsing them, as this renderer
+ *  first did, leaves the enum untaught: the example can only show one member, so a GM told to set
+ *  the weather reaches for "sunny" or "clear", the validator refuses a word that was never shown to
+ *  it, and the failure is silent — the tag is stripped on the name match, so the narration reads
+ *  clean and the world simply never changed.
+ *
+ *  Deriving the vocabulary here rather than asking a package to spell it in its description is what
+ *  keeps the two from drifting: the prompt and the validator now read the same parsed table, so an
+ *  enum that changes changes both, and a description cannot promise a value the validator refuses.
+ *
+ *  One line per verb, never wrapped — the convention every built-in in the block already follows
+ *  (`gm-prompts.ts:768` runs past 700 characters on one line). The render needs no length budget of
+ *  its own: every enum member it prints is a verbatim substring of the table file, which is refused
+ *  above 64 KB on its declared bytes before it is ever read. */
 export function renderGmVerbInstructions(table: ResolvedGmVerbTable): string[] {
-  return table.verbs.map((verb) => `- [${verb.name}:${verbExamplePayload(verb)}] — ${verb.description}`);
+  return table.verbs.map(
+    (verb) =>
+      `- [${verb.name}:${verbArgumentSchema(verb)}] — ${verb.description} Example: [${verb.name}:${verbExamplePayload(verb)}]`,
+  );
+}
+
+/** The schematic payload: every declared argument in order, optional ones marked `"name"?:` — the
+ *  one marker that cannot be mistaken for part of the value, since it sits outside the JSON string.
+ *  An argless verb renders `{}` rather than a bare tag, so the grammar never varies. */
+function verbArgumentSchema(verb: GmVerb): string {
+  const fields = verb.args.map(
+    (arg) => `${JSON.stringify(arg.name)}${arg.optional ? "?" : ""}:${verbArgumentValueSchema(arg)}`,
+  );
+  return `{${fields.join(",")}}`;
+}
+
+/** What one argument accepts, in the alternation grammar the built-in commands already use for their
+ *  own closed sets (`[state: exploration|dialogue|combat|travel_rest]`) and that `validateGmVerbArgs`
+ *  already speaks when it refuses a value. Numbers and booleans render unquoted on purpose: the
+ *  validator rejects `"3"` for a number argument rather than coercing it, so the schematic has to
+ *  show the difference the example alone would hide. */
+function verbArgumentValueSchema(arg: GmVerbArg): string {
+  if (arg.enum?.length) return JSON.stringify(arg.enum.join("|"));
+  if (arg.type === "number") return "<number>";
+  if (arg.type === "boolean") return "<true|false>";
+  // The schema requires `maxLength` on an un-enum'd string; the fallback covers a future loosening
+  // rather than any table this Engine accepts today.
+  return JSON.stringify(arg.maxLength === undefined ? "<text>" : `<text up to ${arg.maxLength} chars>`);
 }
 
 /** A payload the model can copy: every required argument, with the first enum value or a named
- *  placeholder. An argless verb renders `{}` rather than a bare tag, so the grammar never varies. */
+ *  placeholder. Kept concrete and parseable — the regression round-trips this exact string back
+ *  through the parser, so an example the reminder shows is always one the Engine accepts. */
 function verbExamplePayload(verb: GmVerb): string {
   const fields = verb.args
     .filter((arg) => !arg.optional)

@@ -355,14 +355,94 @@ try {
 
   const instructions = renderGmVerbInstructions(live);
   assert.equal(instructions.length, 2);
-  assert.match(instructions[0]!, /^- \[weather:\{"word":"fair"\}\] — /);
-  assert.match(instructions[1]!, /^- \[standing:\{"npc":"<npc>","stance":"none"\}\] — /);
+  // Two payload slots, both load-bearing: the schematic teaches the vocabulary, the example is one
+  // concrete instance. Enums render as the alternation the built-in commands already use, optional
+  // arguments are marked outside the JSON string, and an un-enum'd string advertises its cap.
+  assert.equal(
+    instructions[0],
+    '- [weather:{"word":"fair|overcast|rain|storm|snow","intensity"?:"light|heavy"}] — ' +
+      'Set the world\'s weather when the sky visibly changes. Example: [weather:{"word":"fair"}]',
+  );
+  assert.equal(
+    instructions[1],
+    '- [standing:{"npc":"<text up to 40 chars>","stance":"none|known|friend|close|hostile",' +
+      '"line"?:"<text up to 80 chars>"}] — Record how an NPC now regards the player. ' +
+      'Example: [standing:{"npc":"<npc>","stance":"none"}]',
+  );
+
+  /** Split one rendered line back into the slot that teaches and the slot that is copyable. A
+   *  description carries no square bracket (the schema refuses one), so the schematic always ends at
+   *  the first `] — `; the example is last, so it is found from the right. */
+  function splitVerbLine(line: string): { schematic: string; example: string } {
+    const schematicEnd = line.indexOf("] — ");
+    const exampleStart = line.lastIndexOf(" Example: [");
+    assert.ok(schematicEnd > 0, `a rendered verb line must carry a schematic payload: ${line}`);
+    assert.ok(exampleStart > schematicEnd, `a rendered verb line must carry an example: ${line}`);
+    return {
+      schematic: line.slice(0, schematicEnd + 1),
+      example: line.slice(exampleStart + " Example: ".length),
+    };
+  }
+
+  // The line has to TEACH the closed vocabulary, not merely show one member of it. An example can
+  // only ever carry a single enum value, so a GM whose only channel is the example reaches for a
+  // word that was never on the list — "sunny" for "fair", "friendly" for "friend" — the validator
+  // refuses it, and the failure is SILENT: the tag is stripped on the name match rather than on
+  // validation success, so the narration reads clean and the world simply never changed.
+  //
+  // Both sides of every assertion below come from the same parsed table the renderer read, which is
+  // what makes the lane discriminate in both directions. Drop the enum render and the members stop
+  // appearing in the line. Change an enum in the table without changing the render — a stale line —
+  // and the expectation moves while the line does not. Neither failure can be papered over by a
+  // literal copied into this file, because there is no literal to update.
+  let enumArgsChecked = 0;
+  for (const [index, verb] of live.verbs.entries()) {
+    const line = instructions[index]!;
+    assert.ok(line.startsWith(`- [${verb.name}:`), `instruction ${index} must belong to ${verb.name}: ${line}`);
+    const { schematic, example } = splitVerbLine(line);
+    for (const arg of verb.args) {
+      // Asserted against the schematic alone: the example omits optional arguments entirely, and a
+      // required one would otherwise be satisfied by the example's copy of the same key.
+      const key = `${JSON.stringify(arg.name)}${arg.optional ? "?" : ""}:`;
+      assert.ok(
+        schematic.includes(key),
+        `${verb.name} must declare ${arg.name}${arg.optional ? " as optional" : ""}: ${schematic}`,
+      );
+      if (!arg.enum) {
+        // An un-enum'd string is bounded instead, and the cap is the only thing worth teaching.
+        if (arg.type === "string") {
+          assert.ok(
+            schematic.includes(`up to ${arg.maxLength} chars`),
+            `${verb.name}.${arg.name} must advertise its cap: ${schematic}`,
+          );
+        }
+        continue;
+      }
+      enumArgsChecked += 1;
+      assert.ok(arg.enum.length > 1, `fixture ${verb.name}.${arg.name} needs >1 enum member to prove anything`);
+      // The whole closed set, verbatim, in declaration order, attached to its own argument.
+      assert.ok(
+        schematic.includes(`${key}${JSON.stringify(arg.enum.join("|"))}`),
+        `${verb.name}.${arg.name} must render its whole enum: ${schematic}`,
+      );
+      for (const member of arg.enum) {
+        assert.ok(schematic.includes(member), `${verb.name}.${arg.name} must name ${member} verbatim: ${schematic}`);
+      }
+      // And the reason the schematic exists at all: it carries members the example cannot.
+      assert.ok(
+        arg.enum.some((member) => !example.includes(member)),
+        `${verb.name}.${arg.name} proves nothing if the example already shows every member: ${line}`,
+      );
+    }
+  }
+  assert.equal(enumArgsChecked, 3, "the enum lane must have actually run over the fixture's three enum arguments");
 
   // D9, the pin that matters most: every example the reminder shows the GM must parse back out as a
-  // real call. A verb advertised but unmatchable would be emitted and left in the saved prose.
+  // real call. A verb advertised but unmatchable would be emitted and left in the saved prose. The
+  // schematic is deliberately NOT parseable — it is a grammar, not a payload — so this reads the
+  // example slot, which is the half the model is told to copy.
   for (const line of instructions) {
-    const example = line.match(/^- (\[[^\]]*\}\])/)?.[1];
-    assert.ok(example, `a rendered verb line must carry a copyable example: ${line}`);
+    const { example } = splitVerbLine(line);
     const round = parseAndStripGmVerbCalls(`The scene shifts. ${example}`, live);
     assert.equal(round.calls.length, 1, `the reminder's own example must parse: ${example}`);
     assert.equal(round.content.trim(), "The scene shifts.");
