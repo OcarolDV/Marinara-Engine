@@ -3763,13 +3763,12 @@ export async function generateRoutes(app: FastifyInstance) {
               // A package that declares GM verbs gets one COMMANDS line each. No package declares a
               // table today, so this renders nothing and the reminder is byte-identical.
               //
-              // Gated on impersonate to match the scan below. An impersonated turn is the player
-              // writing, so nothing parses verbs back out of it; teaching a vocabulary no parser
-              // will hear leaves whatever the model wrote as a raw bracket tag in the player's own
-              // message. The built-in GM tags do teach-but-never-parse on an impersonated turn —
-              // this reminder renders them either way, and their parse is `!input.impersonate` — but
-              // the client strips those by name, so the built-in wart costs prompt bytes while the
-              // same shape would cost a package verb a visible tag. Hence a gate rather than a match.
+              // Gated on impersonate to match the scan below, which skips impersonated turns
+              // (`chatMode === "game" && !input.impersonate`). An impersonated turn is the player
+              // writing, so nothing parses verbs back out of it, and the game surface renders
+              // user-role rows raw — a verb tag the model wrote would land in the player's own
+              // message as visible text. The built-in GM tags already teach-but-never-parse on
+              // these turns; the gate declines to widen that wart rather than matching it.
               experienceGmVerbs:
                 gmVerbTableForPrompt && !input.impersonate ? renderGmVerbInstructions(gmVerbTableForPrompt) : undefined,
               playerInventory: (() => {
