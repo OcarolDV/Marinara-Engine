@@ -190,11 +190,11 @@ finished narration, and executes on the package's behalf. No package server code
 it, so a `game-surface` Experience with only `agents` and `client` entrypoints can still have the
 GM change its world in prose.
 
-The declaration format ships ahead of its runtime. Everything below describes the whole seam; the
-schema, the reserved-name rules and the key-ownership rules are live now, while the table reader,
-the prompt render and the executor land with the `supportedCapabilityApi` bump to 1.16. Until that
-bump, a package that ships a table is not doing anything — no verbs resolve, nothing is rendered,
-nothing is parsed.
+The whole seam is live: the schema, the reserved-name and key-ownership rules, the table reader, the
+prompt render and the executor. A package that ships a table and holds `chat-write` gets its verbs
+rendered into the GM's reminder on every Game turn of a chat bound to it, and executed when the GM
+uses one. A chat bound to no package, or to a package that declares no table, resolves zero verbs
+and its turn is byte-identical to one from before this seam existed.
 
 A package declares its table as `gm-verbs.json`, listed in `contributions.assets.paths` and
 hash-pinned in `files[]` like any other asset. Discovery is by that reserved filename, which is a
@@ -207,8 +207,8 @@ unguarded over `/api/capability-packages/<id>/assets/gm-verbs.json`, because the
 privileged-access check, so a verb table must never carry anything sensitive. Like the 1.11–1.13
 seams this is a soft seam: an older Engine sees an ordinary JSON asset and ignores it, so a package
 can ship a table without narrowing its install range — declare `capabilityApi` 1.16 only if your
-package _requires_ the verbs to run, and not before the runtime ships: `supportedCapabilityApi` is
-still 1.15 today, so a package declaring 1.16 now is refused at install by every Engine there is.
+package _requires_ the verbs to run, since doing so refuses the install on every Engine older than
+this one.
 
 The document is `{ "schemaVersion": 1, "verbs": [ … ] }` with one to sixteen verbs. Each verb is
 strict: an unknown key inside one is a refusal, not a silent extra. Unknown fields beside
