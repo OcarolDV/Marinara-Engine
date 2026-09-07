@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  clampParsedDiceToLimits,
   isDiceNotation as sharedIsDiceNotation,
   isWithinDiceLimits,
   parseDiceNotation,
@@ -115,7 +116,12 @@ for (const testCase of CASES) {
   const rolled = rollDice(testCase.notation);
   const expectedCount = Math.min(parsed.count, MAX_DICE_COUNT);
   assert.equal(rolled.rolls.length, expectedCount, `wrong die count for ${testCase.notation}`);
-  assert.equal(rolled.notation, testCase.notation.trim());
+  // A roll inside the ceilings still reports the text it was given, character
+  // for character. A clamped one reports the dice it threw instead — see the
+  // sweep below for that half.
+  if (isWithinDiceLimits(parsed)) {
+    assert.equal(rolled.notation, testCase.notation.trim(), `an unclamped /roll echoes its input: ${testCase.notation}`);
+  }
   assert.equal(rolled.modifier, parsed.modifier);
   assert.equal(
     rolled.total,
@@ -131,6 +137,55 @@ for (const testCase of CASES) {
 assert.equal(rollDice("500d6").rolls.length, MAX_DICE_COUNT);
 assert.equal(rollDice("1d5000").rolls.length, 1);
 assert.ok(!isWithinDiceLimits(parseDiceNotation("500d6")!));
+
+// ── A clamped roll names the dice it threw ──
+//
+// This is a deliberate behavior change, disclosed in the changelog. Before it, a
+// clamped roll kept the text the player typed: staging's dice service returned
+// `notation.trim()` next to a count it had already run through Math.min, and the
+// branch that moved the grammar into the shared module preserved that byte for
+// byte. So a hundred dice landed under a card headed 500d6, and the narrator tag
+// and the message metadata told the model the same thing. The clamp now rebuilds
+// the notation from what it will actually throw. The old pin here read
+// `rolled.notation === typed` for every case including these; it now reads the
+// canonical form, and the unclamped half of that promise is asserted on its own
+// in the sweep above and again at the end of this block.
+for (const [typed, canonical] of [
+  ["101d6", "100d6"],
+  ["500d6", "100d6"],
+  ["101d20", "100d20"],
+  ["1d1001", "1d1000"],
+  ["1d5000", "1d1000"],
+  // The modifier sits outside both ceilings and comes back with its own sign.
+  ["500d6+3", "100d6+3"],
+  ["500d6-2", "100d6-2"],
+  // A bare dN stays bare — only the faces can clamp there, since one die never does.
+  ["d5000", "d1000"],
+  // Both ceilings at once.
+  ["500d5000", "100d1000"],
+] as const) {
+  assert.equal(rollDice(typed).notation, canonical, `a clamped /roll names the dice it threw: ${typed}`);
+  const clamped = clampParsedDiceToLimits(parseDiceNotation(typed)!);
+  assert.equal(clamped.notation, canonical, `and the clamp itself is where that happens: ${typed}`);
+  assert.equal(clamped.dice, canonical.split(/[+-]/)[0], `dice and notation agree after a clamp: ${typed}`);
+}
+
+// The notation a clamped roll reports is one the grammar reads back to the dice
+// that were thrown — a card the player can retype and get the same roll.
+for (const typed of ["500d6+3", "d5000", "500d5000"]) {
+  const rolled = rollDice(typed);
+  const reparsed = parseDiceNotation(rolled.notation);
+  assert.ok(reparsed, `a clamped notation parses: ${typed}`);
+  assert.ok(isWithinDiceLimits(reparsed), `and asks for nothing past the ceilings: ${typed}`);
+  assert.equal(reparsed.count, rolled.rolls.length, `and names the dice actually thrown: ${typed}`);
+  assert.equal(reparsed.modifier, rolled.modifier, `and keeps the modifier: ${typed}`);
+}
+
+// Nothing inside the ceilings moved. An unclamped roll still echoes its input
+// character for character, leading zeros and all.
+for (const typed of ["2d6+3", "d20", "100d1000", "1d020", " 2d6 ", "4d8-1"]) {
+  assert.equal(rollDice(typed).notation, typed.trim(), `an unclamped /roll is byte-identical: ${typed}`);
+}
 
 // ── Entry 3: the roll_dice tool ──
 

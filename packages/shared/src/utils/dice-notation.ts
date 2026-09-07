@@ -116,16 +116,36 @@ export function isWithinDiceLimits(parsed: Pick<ParsedDiceNotation, "count" | "s
 /**
  * Trim an oversized notation down to the ceilings instead of refusing it.
  *
- * The clamping caller keeps the notation string the player typed, so a clamped
- * roll still reports what was asked for. Callers that must not lie to a model
- * about how many dice were thrown use `isWithinDiceLimits` and refuse instead.
+ * The clamped result carries the notation of the dice that will actually be
+ * thrown, not the one that was asked for — `500d6` comes back as `100d6`. This
+ * type holds one notation, not a requested/rolled pair, and the notation every
+ * reader of a roll shows is this one: the dice card's header, the narrator tag
+ * the model is handed, the metadata stored on the message. A clamped roll used
+ * to hand all three the request, so a hundred dice landed under a card headed
+ * `500d6`. The request now survives only where a caller kept its own copy of the
+ * input, which is where a caller that wants to say "asked for 500, threw 100"
+ * would read it from.
+ *
+ * A notation already inside the ceilings comes back unchanged down to the
+ * characters — `1d020` stays `1d020` — so only a roll that really was trimmed
+ * reads differently than it did.
+ *
+ * Callers that must not throw fewer dice than a model asked for use
+ * `isWithinDiceLimits` and refuse instead.
  */
 export function clampParsedDiceToLimits(parsed: ParsedDiceNotation): ParsedDiceNotation {
-  return {
-    ...parsed,
-    count: Math.min(parsed.count, MAX_DICE_COUNT),
-    sides: Math.min(parsed.sides, MAX_DICE_SIDES),
-  };
+  const count = Math.min(parsed.count, MAX_DICE_COUNT);
+  const sides = Math.min(parsed.sides, MAX_DICE_SIDES);
+  if (count === parsed.count && sides === parsed.sides) return { ...parsed };
+
+  // Rebuilt from the clamped pieces, in the form the notation was written in.
+  // `dice` is the parser's own record of whether a count was spelled out, so
+  // reading its leading `d` keeps bare `d5000` bare rather than promoting it to
+  // `1d1000` — and a bare notation is one die, which is never the piece that
+  // clamps. The modifier is outside both ceilings and carries its own sign back.
+  const dice = `${parsed.dice.startsWith("d") ? "" : count}d${sides}`;
+  const modifierText = parsed.modifier === 0 ? "" : `${parsed.modifier > 0 ? "+" : ""}${parsed.modifier}`;
+  return { notation: `${dice}${modifierText}`, dice, count, sides, modifier: parsed.modifier };
 }
 
 /**
