@@ -15,9 +15,16 @@
 //   3. Every refusal tier — no table, no permission, oversized, tampered, malformed, not ready,
 //      wrong owner — yields no verbs and never throws, because none of them may cost a player a turn.
 //
-// Plus the two coherence pins that no single-function test can make: the prompt render and the
+// Plus the coherence pins that no single-function test can make: the prompt render and the
 // narration parse agree on every verb (a verb advertised but unmatchable leaks a raw bracket tag
-// into the player's prose), and both client SSE switches handle the events the server emits.
+// into the player's prose), both client SSE switches handle the events the server emits, and the
+// two turn shapes that are not a GM writing prose —
+//
+//   4. An IMPERSONATED turn is taught nothing. It is the player writing, no parser runs over it, so
+//      a taught verb could only surface as a raw bracket tag in the player's own message.
+//   5. A VERB-ONLY turn keeps its turn. Its narration strips to empty, and the hidden-anchor gate it
+//      then meets counted only Conversation commands — both zero in game mode — so the turn errored
+//      and its already-validated writes were discarded before the executor was ever reached.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -149,6 +156,8 @@ const [
   { supportedCapabilityApi },
   { GM_VERB_TABLE_MAX_BYTES },
   { logger },
+  { buildGmFormatReminder },
+  { shouldSaveHiddenGenerationAnchor },
 ] = await Promise.all([
   import("../../packages/server/src/services/capability-packages/package-manager.service.js"),
   import("../../packages/server/src/services/capability-packages/capability-gm-verb-runtime.service.js"),
@@ -157,6 +166,8 @@ const [
   import("../../packages/shared/src/schemas/capability-package.schema.js"),
   import("../../packages/shared/src/schemas/gm-verb-table.schema.js"),
   import("../../packages/server/src/lib/logger.js"),
+  import("../../packages/server/src/services/game/gm-prompts.js"),
+  import("../../packages/server/src/routes/generate/spatial-transition-request.js"),
 ]);
 
 const {
@@ -448,6 +459,80 @@ try {
     assert.equal(round.content.trim(), "The scene shifts.");
   }
 
+  // ── An impersonated turn is taught nothing ─────────────────────────────────
+  //
+  // The route decides this (the value it hands the reminder is gated on `!input.impersonate`, pinned
+  // below); what is driven here is the half that decision rests on — that the rendered lines are the
+  // ONLY thing the reminder gains from a verb table, so withholding them on an impersonated turn
+  // withholds the whole vocabulary and nothing else. An impersonated turn is the player writing, and
+  // no parser runs over it, so a taught verb could only ever surface as a raw bracket tag in the
+  // player's own message: the built-in GM tags carry that same wart, but the client strips those by
+  // name, and it does not know a package's.
+  const reminderCtx = {
+    gameActiveState: "exploration" as const,
+    sessionNumber: 1,
+    partyNames: ["Mira"],
+    playerName: "Alyssa",
+    map: null,
+  };
+  const reminderWithVerbs = buildGmFormatReminder({ ...reminderCtx, experienceGmVerbs: instructions });
+  const reminderWithoutVerbs = buildGmFormatReminder({ ...reminderCtx, experienceGmVerbs: undefined });
+  for (const line of instructions) {
+    assert.ok(reminderWithVerbs.includes(line), `a non-impersonated reminder must carry ${line}`);
+    assert.equal(reminderWithoutVerbs.includes(line), false, `an impersonated reminder must not carry ${line}`);
+  }
+  // Byte-identical, not merely verb-free: the gate must cost the impersonated turn its verbs and
+  // nothing else about the reminder it would otherwise get.
+  assert.equal(
+    reminderWithoutVerbs,
+    buildGmFormatReminder(reminderCtx),
+    "withholding the verbs must leave the rest of the reminder untouched",
+  );
+  // And the verb names themselves are gone, not just the rendered lines — a partial render that
+  // leaked a bare name would still teach a vocabulary nothing will hear.
+  for (const verb of live.verbs) {
+    assert.equal(
+      reminderWithoutVerbs.includes(`[${verb.name}:`),
+      false,
+      `an impersonated reminder must not name ${verb.name} at all`,
+    );
+  }
+
+  // ── A verb-only turn keeps its turn ────────────────────────────────────────
+  //
+  // A game turn that is nothing but verb tags strips to empty, and the two Conversation command
+  // counts the anchor gate was built on are both zero in game mode by construction. Without the verb
+  // count the gate says no, the turn takes the error branch, and writes that already validated are
+  // dropped (#5902 stays open for the generic surface; this closes the flagship path).
+  const anchorGateBase = {
+    impersonate: false,
+    parsedCommandCount: 0,
+    parsedRawCommandCount: 0,
+    spatialDirectiveDetected: false,
+  };
+  assert.equal(
+    shouldSaveHiddenGenerationAnchor({ ...anchorGateBase, gmVerbCallCount: 1 }),
+    true,
+    "a verb-only game turn must save the hidden anchor rather than error",
+  );
+  assert.equal(
+    shouldSaveHiddenGenerationAnchor({ ...anchorGateBase, gmVerbCallCount: 0 }),
+    false,
+    "a genuinely empty game turn — no verbs, no commands — still errors, exactly as it does today",
+  );
+  assert.equal(
+    shouldSaveHiddenGenerationAnchor(anchorGateBase),
+    false,
+    "the count is optional, so every non-game caller keeps the behavior it has",
+  );
+  // An impersonated turn parses no verbs at all, so it can never reach this gate with a count — but
+  // the gate must refuse one anyway rather than let a future caller open a second impersonate hole.
+  assert.equal(
+    shouldSaveHiddenGenerationAnchor({ ...anchorGateBase, impersonate: true, gmVerbCallCount: 3 }),
+    false,
+    "an impersonated turn never anchors on a verb count",
+  );
+
   // ── Narration scan ─────────────────────────────────────────────────────────
 
   const clean = parseAndStripGmVerbCalls('Rain sheets down. [weather:{"word":"storm","intensity":"heavy"}]', live);
@@ -688,6 +773,51 @@ try {
   assert.equal(bothReply.frames.length, 1);
   assert.deepEqual((await readMetadata(chatId)).pixelforgeWeather, { word: "overcast" });
 
+  // The verb-only turn's own message: a hidden, empty, command-only anchor, shaped exactly as the
+  // route saves it. This is the message the writes now claim against, and the point of the anchor —
+  // before it, this turn produced no message at all and the executor was never reached. Both halves
+  // run against it, the metadata callback fires (the route turns that into `metadata_patch`), and
+  // the only frame on the wire is the event verb's: no error frame anywhere in the turn.
+  const anchorMessage = await chats.createMessage({ chatId, role: "assistant", content: "" });
+  assert.ok(anchorMessage?.id);
+  await chats.updateMessageExtra(anchorMessage.id, {
+    hiddenFromUser: true,
+    hiddenFromAI: true,
+    commandOnly: true,
+    isGenerated: true,
+  });
+  const anchorReply = createReplyDouble();
+  let anchorMetadataWritten = false;
+  await executeGmVerbCalls({
+    calls: [
+      { verb: weatherVerb, args: { word: "snow", intensity: "heavy" } },
+      { verb: standingVerb, args: { npc: "Tam", stance: "hostile" } },
+    ],
+    table: live,
+    turn: { chatId, messageId: anchorMessage.id, swipeIndex: anchorMessage.activeSwipeIndex ?? 0 },
+    store: chats,
+    reply: anchorReply.reply,
+    onMetadataWritten: () => {
+      anchorMetadataWritten = true;
+    },
+  });
+  assert.equal(anchorMetadataWritten, true, "a verb-only turn's state write must announce itself for refetch");
+  assert.deepEqual(
+    (await readMetadata(chatId)).pixelforgeWeather,
+    { word: "snow", intensity: "heavy" },
+    "a verb-only turn's state write lands through patchMetadata like any other",
+  );
+  assert.deepEqual(
+    anchorReply.frames.map((frame) => frame.type),
+    ["gm_verb"],
+    "a verb-only turn sends its event verb and nothing else — no error frame",
+  );
+  const anchorSwipes = await chats.getSwipes(anchorMessage.id);
+  const anchorExtra = anchorSwipes.find((swipe: { index: number }) => swipe.index === 0)!.extra as string | null;
+  const anchorClaim = JSON.parse(anchorExtra ?? "{}");
+  assert.equal(anchorClaim["gmVerb:weather"]?.verb, "weather", "the anchor carries the claim the prose turn would");
+  assert.equal(anchorClaim.hiddenFromUser, true, "the claim must not clobber what makes the anchor an anchor");
+
   // An empty messageId costs the CLAIM, never the write or the emit. The claim buys provenance, not
   // dedupe, so losing it loses a record and nothing else.
   const anonymousReply = createReplyDouble();
@@ -727,6 +857,41 @@ try {
     generateRoute,
     /if \(chatMode === "game" && !input\.impersonate && fullResponse\) \{/,
     "the GM verb scan must run on its own game-mode-only path",
+  );
+  // The other side of that same predicate. Teach and parse must agree on WHO is speaking: a turn the
+  // scan above skips must not be handed the vocabulary, or the model writes a tag nobody removes and
+  // it lands raw in the player's own impersonated message.
+  assert.match(
+    generateRoute,
+    /experienceGmVerbs:\s*\n?\s*gmVerbTableForPrompt && !input\.impersonate \?/,
+    "the reminder must withhold the verb vocabulary on the same turns the scan skips",
+  );
+
+  // A verb-only turn strips to empty, and the anchor gate is what stands between it and the error
+  // branch. The count has to be wired in from the scan, or the gate sees two zeros and says no.
+  // Scoped to the gate's own call rather than the bare field: the same count also rides the warn
+  // payload a few lines above, and a pin that either one satisfies proves nothing about the gate.
+  const anchorGateCall = generateRoute.match(
+    /shouldSaveHiddenGenerationAnchor\(\{[\s\S]*?gmVerbCallCount: collectedGmVerbCalls\.length,[\s\S]*?\}\)/,
+  );
+  assert.ok(anchorGateCall, "the hidden-anchor gate must see how many verbs this turn parsed");
+  // Saving the anchor is only half of it: the execution site sits past the early return that path
+  // takes, so the anchor branch has to reach it explicitly or the writes are still discarded.
+  assert.match(
+    generateRoute,
+    /await executeCollectedGmVerbCalls\(\{\s*\n?\s*messageId: anchoredMsg\?\.id/,
+    "the hidden-anchor path must execute the turn's verbs before it returns",
+  );
+  assert.equal(
+    (generateRoute.match(/await executeCollectedGmVerbCalls\(/g) ?? []).length,
+    2,
+    "both turn shapes — the saved message and the hidden anchor — execute the verbs, and only those two",
+  );
+  // Ordering, because the two live in one `if`/fallthrough: the gate must be consulted BEFORE the
+  // empty-response error is sent, or a verb-only turn is told it produced nothing.
+  assert.ok(
+    generateRoute.indexOf(anchorGateCall[0]) < generateRoute.indexOf("The AI returned an empty response."),
+    "the verb count must reach the anchor gate ahead of the empty-response error frame",
   );
 
   // The next three are SOURCE-TEXT pins, and named as such: the execution site lives inside a

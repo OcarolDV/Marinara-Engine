@@ -3763,12 +3763,15 @@ export async function generateRoutes(app: FastifyInstance) {
               // A package that declares GM verbs gets one COMMANDS line each. No package declares a
               // table today, so this renders nothing and the reminder is byte-identical.
               //
-              // No impersonate guard here, while the scan below has one: an impersonated turn is
-              // shown the verb vocabulary and nothing parses it back out. That asymmetry is the
-              // shipped behavior for every built-in GM tag — this reminder renders them on an
-              // impersonated turn too, and their parse is `!input.impersonate` as well — so the verbs
-              // follow it rather than inventing a second rule for the same prompt.
-              experienceGmVerbs: gmVerbTableForPrompt ? renderGmVerbInstructions(gmVerbTableForPrompt) : undefined,
+              // Gated on impersonate to match the scan below. An impersonated turn is the player
+              // writing, so nothing parses verbs back out of it; teaching a vocabulary no parser
+              // will hear leaves whatever the model wrote as a raw bracket tag in the player's own
+              // message. The built-in GM tags do teach-but-never-parse on an impersonated turn —
+              // this reminder renders them either way, and their parse is `!input.impersonate` — but
+              // the client strips those by name, so the built-in wart costs prompt bytes while the
+              // same shape would cost a package verb a visible tag. Hence a gate rather than a match.
+              experienceGmVerbs:
+                gmVerbTableForPrompt && !input.impersonate ? renderGmVerbInstructions(gmVerbTableForPrompt) : undefined,
               playerInventory: (() => {
                 try {
                   const inv = (chatMeta.gameInventory as Array<{ name: string; quantity: number }>) ?? [];
@@ -7285,6 +7288,44 @@ export async function generateRoutes(app: FastifyInstance) {
             }
           }
 
+          // ── Package-declared GM verb execution (Game mode) (#5798) ──
+          // Its own execution site, deliberately not the Conversation command block below: that one
+          // brackets its work in assistant_commands_start/_end frames the game client does not
+          // consume, and it never runs in game mode at all.
+          //
+          // A closure rather than one inline block because the turn reaches this from two places —
+          // the saved-message path and the hidden-anchor path a verb-only turn takes, which returns
+          // before the saved-message path is ever reached. The verbs are validated identically on
+          // both; only the turn reference they claim against differs.
+          //
+          // Nothing runs on an aborted turn. For a state verb that is a policy choice — a stopped
+          // turn must not change the world. For an event verb it is not a choice at all: the client
+          // has dropped the stream, so the frame would evaporate unlogged.
+          const executeCollectedGmVerbCalls = async (turnRef: { messageId: string; swipeIndex: number }) => {
+            if (collectedGmVerbCalls.length > 0 && gmVerbTable && !abortController.signal.aborted) {
+              let gmVerbMetadataWritten = false;
+              await executeGmVerbCalls({
+                calls: collectedGmVerbCalls,
+                table: gmVerbTable,
+                turn: { chatId: input.chatId, ...turnRef },
+                store: chats,
+                reply,
+                onMetadataWritten: () => {
+                  gmVerbMetadataWritten = true;
+                },
+              });
+              if (gmVerbMetadataWritten) {
+                // The payload is inert — the client handler reads only the event type and refetches
+                // the chat, which re-delivers the whole metadata object to the package's surface as
+                // props. It rides along for debuggability, not because anything consumes it.
+                sendSseEvent(reply, {
+                  type: "metadata_patch",
+                  data: { source: "gm_verb", packageId: gmVerbTable.packageId },
+                });
+              }
+            }
+          };
+
           if (contentReplaced) {
             if (!holdForTextRewrite) {
               sendSseEvent(reply, { type: "content_replace", data: fullResponse });
@@ -7302,6 +7343,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 targetCharId,
                 parsedCommandCount: parsedCommands.length,
                 parsedRawCommandCount,
+                gmVerbCallCount: collectedGmVerbCalls.length,
                 providerThinkingLength: providerThinking.length,
                 fullThinkingLength: fullThinking.length,
                 contentReplaced,
@@ -7315,13 +7357,18 @@ export async function generateRoutes(app: FastifyInstance) {
                 impersonate: input.impersonate,
                 parsedCommandCount: parsedCommands.length,
                 parsedRawCommandCount,
+                // A game turn that is nothing but verb tags strips to empty. Without this the gate
+                // sees only the two Conversation counts — both zero in game mode — and the turn
+                // errors out, discarding writes that already validated (#5798, #5902).
+                gmVerbCallCount: collectedGmVerbCalls.length,
                 spatialDirectiveDetected: assistantSpatialDirectiveDetected,
               })
             ) {
               logger.info(
-                "[generate] Model emitted %d enabled command(s) (%d parsed) with no visible prose for chat %s; saving hidden command anchor",
+                "[generate] Model emitted %d enabled command(s) (%d parsed) and %d GM verb(s) with no visible prose for chat %s; saving hidden command anchor",
                 parsedCommands.length,
                 parsedRawCommandCount,
+                collectedGmVerbCalls.length,
                 input.chatId,
               );
               const savedMsg = await chats.createMessage({
@@ -7340,6 +7387,12 @@ export async function generateRoutes(app: FastifyInstance) {
                     encryptedReasoning: encryptedReasoningItems?.length ? encryptedReasoningItems : null,
                   })
                 : savedMsg;
+              // The anchor exists so this can run: a verb-only turn's writes land here, against the
+              // anchor's own message, in the same order the saved-message path uses them.
+              await executeCollectedGmVerbCalls({
+                messageId: anchoredMsg?.id ?? "",
+                swipeIndex: anchoredMsg?.activeSwipeIndex ?? 0,
+              });
               if (
                 anchoredMsg?.id &&
                 hierarchicalMapsEnabledForChat &&
@@ -7508,41 +7561,8 @@ export async function generateRoutes(app: FastifyInstance) {
             });
             savedSwipeIndex = 0;
           }
-          // ── Package-declared GM verb execution (Game mode) (#5798) ──
-          // Its own execution site, deliberately not the Conversation command block below: that one
-          // brackets its work in assistant_commands_start/_end frames the game client does not
-          // consume, and it never runs in game mode at all.
-          //
-          // Nothing runs on an aborted turn. For a state verb that is a policy choice — a stopped
-          // turn must not change the world. For an event verb it is not a choice at all: the client
-          // has dropped the stream, so the frame would evaporate unlogged.
-          if (collectedGmVerbCalls.length > 0 && gmVerbTable && !abortController.signal.aborted) {
-            let gmVerbMetadataWritten = false;
-            await executeGmVerbCalls({
-              calls: collectedGmVerbCalls,
-              table: gmVerbTable,
-              turn: {
-                chatId: input.chatId,
-                // Empty on the paths that save no message; that costs the claim, never the effect.
-                messageId: savedMsg?.id ?? "",
-                swipeIndex: savedSwipeIndex ?? 0,
-              },
-              store: chats,
-              reply,
-              onMetadataWritten: () => {
-                gmVerbMetadataWritten = true;
-              },
-            });
-            if (gmVerbMetadataWritten) {
-              // The payload is inert — the client handler reads only the event type and refetches
-              // the chat, which re-delivers the whole metadata object to the package's surface as
-              // props. It rides along for debuggability, not because anything consumes it.
-              sendSseEvent(reply, {
-                type: "metadata_patch",
-                data: { source: "gm_verb", packageId: gmVerbTable.packageId },
-              });
-            }
-          }
+          // Empty messageId on the paths that save no message; that costs the claim, never the effect.
+          await executeCollectedGmVerbCalls({ messageId: savedMsg?.id ?? "", swipeIndex: savedSwipeIndex ?? 0 });
 
           if (
             savedMsg?.id &&
