@@ -1,3 +1,4 @@
+import { isVisibleCapability } from "../../lib/ui-visibility";
 // ──────────────────────────────────────────────
 // Chat: Conversation View — Discord-style composite
 // ──────────────────────────────────────────────
@@ -344,7 +345,11 @@ export function ConversationView({
   const closeGameSetup = useConversationGamesStore((s) => s.closeSetup);
   const { data: installedCapabilities = [] } = useInstalledCapabilityPackages();
   const turnGamePackages = installedCapabilities.filter(
-    (item) => item.status === "active" && item.manifest.kind.includes("turn-game") && item.manifest.entrypoints.client,
+    (item) =>
+      item.status === "active" &&
+      isVisibleCapability(item.manifest) &&
+      item.manifest.kind.includes("turn-game") &&
+      item.manifest.entrypoints.client,
   );
   const hasLiveStream = isStreaming;
   const streamBuffer = useThrottledStreamBuffer();
@@ -458,7 +463,8 @@ export function ConversationView({
   const enabledConversationCapabilities =
     chatMeta.enableAgents === true
       ? installedCapabilities.filter((item) => {
-          if (item.status !== "active" || !item.manifest.entrypoints.client) return false;
+          if (!isVisibleCapability(item.manifest) || item.status !== "active" || !item.manifest.entrypoints.client)
+            return false;
           if (item.manifest.kind.includes("conversation-calls")) return false;
           const contributedAgentIds = item.manifest.contributions?.agentDetail?.agentIds ?? [];
           return activeAgentIds.includes(item.id) || contributedAgentIds.some((id) => activeAgentIds.includes(id));

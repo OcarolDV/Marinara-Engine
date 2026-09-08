@@ -1,3 +1,4 @@
+import { isVisibleCapability } from "../../lib/ui-visibility";
 // ──────────────────────────────────────────────
 // Chat: Conversation Input — Discord-style
 // ──────────────────────────────────────────────
@@ -390,6 +391,7 @@ export function ConversationInput({
       installedCapabilities.filter(
         (item) =>
           isInstalledCapabilityReady(item) &&
+          isVisibleCapability(item.manifest) &&
           item.manifest.kind.includes("turn-game") &&
           item.manifest.entrypoints.client &&
           item.manifest.contributions?.conversationGame,

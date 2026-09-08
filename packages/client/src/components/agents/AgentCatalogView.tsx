@@ -1,3 +1,4 @@
+import { isVisibleCapability, isVisibleChatMode } from "../../lib/ui-visibility";
 import { useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft,
@@ -132,7 +133,7 @@ function kindLabel(kind: CapabilityCatalogPackage["manifest"]["kind"][number]) {
 }
 
 function packageModes(packageId: string): readonly CatalogMode[] {
-  return OFFICIAL_PACKAGE_MODES[packageId] ?? [];
+  return (OFFICIAL_PACKAGE_MODES[packageId] ?? []).filter(isVisibleChatMode);
 }
 
 export function AgentCatalogView() {
@@ -159,6 +160,7 @@ export function AgentCatalogView() {
     const needle = query.trim().toLowerCase();
     return (catalog.data?.packages ?? []).filter(
       ({ manifest, category }) =>
+        isVisibleCapability(manifest) &&
         (modeFilter === "all" || packageModes(manifest.id).includes(modeFilter)) &&
         (!needle ||
           [
@@ -184,7 +186,9 @@ export function AgentCatalogView() {
       {
         id: "uninstalled",
         title: "Uninstalled Agents",
-        entries: packages.filter((entry) => !installedById.has(entry.manifest.id)),
+        entries: packages.filter(
+          (entry) => isVisibleCapability(entry.manifest) && !installedById.has(entry.manifest.id),
+        ),
       },
     ],
     [installedById, packages],
@@ -196,7 +200,10 @@ export function AgentCatalogView() {
         .map((entry) => entry.manifest.id),
     [catalog.data, installedById],
   );
-  const installedPackageIds = useMemo(() => (installed.data ?? []).map((entry) => entry.id), [installed.data]);
+  const installedPackageIds = useMemo(
+    () => (installed.data ?? []).filter((entry) => isVisibleCapability(entry.manifest)).map((entry) => entry.id),
+    [installed.data],
+  );
   const bulkActionPending = installAll.isPending || uninstallAll.isPending;
   const packageActionPending = install.isPending || uninstall.isPending || bulkActionPending;
   const selected =
@@ -209,11 +216,11 @@ export function AgentCatalogView() {
   useEffect(() => {
     if (packages.length === 0) return;
     if (!selectedId && packages[0]) setSelectedId(packages[0].manifest.id);
-    if (selectedId && !packages.some((item) => item.manifest.id === selectedId)) {
+    if (selectedId && selectedId !== initialPackageId && !packages.some((item) => item.manifest.id === selectedId)) {
       setSelectedId(packages[0]?.manifest.id ?? null);
       setMobileDetail(false);
     }
-  }, [packages, selectedId]);
+  }, [packages, selectedId, initialPackageId]);
 
   const handleInstall = async (entry: CapabilityCatalogPackage) => {
     const isUpdate = installedById.has(entry.manifest.id);

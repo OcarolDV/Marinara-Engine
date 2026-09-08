@@ -1,3 +1,4 @@
+import { isVisibleChatMode, UI_VISIBILITY } from "../../lib/ui-visibility";
 // ──────────────────────────────────────────────
 // Chat: Main chat area — mode-aware rendering
 // ──────────────────────────────────────────────
@@ -3021,8 +3022,10 @@ export const ChatArea = memo(function ChatArea() {
   // Unified layout — mode-aware rendering
   // ═══════════════════════════════════════════════
   const msgPayload = (messages ?? []).map((m) => ({ role: m.role, characterId: m.characterId, content: m.content }));
-  const chatList =
-    (allChats as Array<{ id: string; name: string; metadata?: string | Record<string, unknown> }> | undefined) ?? [];
+  const chatList = allChats ?? [];
+  const visibleConnectedChat = chatList.find(
+    (candidate) => candidate.id === chat?.connectedChatId && isVisibleChatMode(candidate.mode),
+  );
   const connectedChatName = chat?.connectedChatId
     ? getConnectedChatDisplayName(chatList.find((item) => item.id === chat.connectedChatId))
     : undefined;
@@ -3086,6 +3089,19 @@ export const ChatArea = memo(function ChatArea() {
   // ═══════════════════════════════════════════════
   // Game mode — RPG surface with GM narration, map, party chat
   // ═══════════════════════════════════════════════
+  if (chatMode === "game" && !UI_VISIBILITY.gameMode) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-4 p-6 text-center">
+        <h1 className="text-lg font-semibold">{localizeUi("writersRoom.hiddenGame")}</h1>
+        <p className="max-w-md text-sm text-[var(--muted-foreground)]">
+          {localizeUi("writersRoom.hiddenGameDescription")}
+        </p>
+        <button type="button" className="mari-chrome-control min-h-11 px-4" onClick={() => setActiveChatId(null)}>
+          {localizeUi("writersRoom.backToWorkspace")}
+        </button>
+      </div>
+    );
+  }
   if (chatMode === "game") {
     if (!chat) return surfaceFallback;
 
@@ -3217,7 +3233,7 @@ export const ChatArea = memo(function ChatArea() {
             onPeekPrompt={handlePeekPrompt}
             onBranch={isSceneChat ? undefined : handleBranch}
             onToggleSelectMessage={handleToggleSelectMessage}
-            onSwitchChat={chat?.connectedChatId ? () => setActiveChatId(chat.connectedChatId!) : undefined}
+            onSwitchChat={visibleConnectedChat ? () => setActiveChatId(visibleConnectedChat.id) : undefined}
             onConcludeScene={chatMeta.sceneStatus === "active" ? () => concludeScene(activeChatId) : undefined}
             onAbandonScene={chatMeta.sceneStatus === "active" ? () => abandonScene(activeChatId) : undefined}
             onOpenSettings={handleOpenSettingsPanel}

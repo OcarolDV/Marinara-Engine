@@ -1,3 +1,4 @@
+import { UI_VISIBILITY } from "../../lib/ui-visibility";
 // ──────────────────────────────────────────────
 // Chat: Input — mode-aware styling
 // ──────────────────────────────────────────────
@@ -350,7 +351,10 @@ export const ChatInput = memo(function ChatInput({
   const hierarchicalMapsActive =
     mode === "roleplay" && chatMetadata.enableAgents === true && activeAgentIds.includes("hierarchical-maps");
   const combatActionActive =
-    mode === "roleplay" && combatAgentEnabled === true && typeof onStartEncounter === "function";
+    UI_VISIBILITY.combat &&
+    mode === "roleplay" &&
+    combatAgentEnabled === true &&
+    typeof onStartEncounter === "function";
   const showRoleplayAgentActions = narrativeDirectorActive || combatActionActive;
   const consumeNarrativeDirectorMode = useCallback((): NarrativeDirectorMode | undefined => {
     if (!pushStoryMode || !narrativeDirectorActive) return undefined;

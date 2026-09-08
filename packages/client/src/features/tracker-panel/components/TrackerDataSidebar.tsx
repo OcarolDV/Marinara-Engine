@@ -1,3 +1,4 @@
+import { isVisibleCapability } from "../../../lib/ui-visibility";
 import { Component, useCallback, useState, type CSSProperties, type ErrorInfo, type ReactNode } from "react";
 import type { PresentCharacter } from "@marinara-engine/shared";
 import {
@@ -126,6 +127,7 @@ export function TrackerDataSidebar({
   const { data: installedCapabilities = [] } = useInstalledCapabilityPackages();
   const capabilityTrackerPackages = installedCapabilities.filter(
     (item) =>
+      isVisibleCapability(item.manifest) &&
       item.status === "active" &&
       enabledAgentTypes.has(item.id) &&
       Boolean(item.manifest.entrypoints.client) &&

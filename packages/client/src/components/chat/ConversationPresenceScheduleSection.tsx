@@ -1,3 +1,4 @@
+import { UI_VISIBILITY } from "../../lib/ui-visibility";
 import { useMemo, useState } from "react";
 import { CalendarClock, Pencil } from "lucide-react";
 import {
@@ -143,6 +144,8 @@ export function ConversationPresenceScheduleSection({
   const extraBlocks = upcomingBlocks.slice(1);
   const badge = schedulesEnabled ? (schedule ? "Active" : "Ready") : "Off";
   const summary = getSummaryText(schedulesEnabled, hasGeneratedSchedules, schedule);
+
+  if (!UI_VISIBILITY.schedules) return null;
 
   const openEditor = (day?: string | null) => {
     if (!onOpenScheduleEditor) return;

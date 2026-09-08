@@ -1,3 +1,4 @@
+import { isVisibleCapability } from "../../lib/ui-visibility";
 // ──────────────────────────────────────────────
 // Panel: Agents
 // ──────────────────────────────────────────────
@@ -331,7 +332,7 @@ export function AgentsPanel() {
     // The management pane lists every installed package, including feature-only
     // Agents such as Noodle. `libraryHidden` still keeps those manifests out of
     // chat pickers and runtime Agent menus.
-    () => availableBuiltInAgents.filter((agent) => !deletedBuiltInTypes.has(agent.id)),
+    () => availableBuiltInAgents.filter((agent) => isVisibleCapability(agent) && !deletedBuiltInTypes.has(agent.id)),
     [availableBuiltInAgents, deletedBuiltInTypes],
   );
   // Custom agents = DB entries whose type doesn't match any built-in

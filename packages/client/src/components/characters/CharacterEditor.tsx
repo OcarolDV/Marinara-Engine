@@ -1,3 +1,4 @@
+import { isVisibleEditorSection, UI_VISIBILITY } from "../../lib/ui-visibility";
 // ──────────────────────────────────────────────
 // Character Editor — Full-page detail view
 // Replaces the chat area when editing a character.
@@ -312,16 +313,11 @@ export function CharacterEditor() {
   const uploadCharacterSheet = useUploadCharacterGalleryImage(characterId ?? "");
   const { data: connectionsList } = useConnections();
 
-  const [activeTab, setActiveTab] = useState<TabId>(
-    () => (useUIStore.getState().characterDetailInitialTab as TabId | null) ?? "metadata",
-  );
+  const requestedTab = useUIStore((state) => state.characterDetailInitialTab) as TabId | null;
+  const initialTab = requestedTab && isVisibleEditorSection(requestedTab) ? requestedTab : "metadata";
+  const [activeTab, setActiveTab] = useState<TabId>(initialTab);
   const [formData, setFormData] = useState<CharacterData | null>(null);
-  const { contentRef, scrollToSection } = useEditorSections(
-    characterId,
-    !!formData,
-    (useUIStore.getState().characterDetailInitialTab as TabId | null) ?? "metadata",
-    setActiveTab,
-  );
+  const { contentRef, scrollToSection } = useEditorSections(characterId, !!formData, initialTab, setActiveTab);
   const [characterComment, setCharacterComment] = useState("");
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -1124,7 +1120,11 @@ export function CharacterEditor() {
           </div>
         </div>
 
-        <EditorTabNavigation tabs={TABS} activeId={activeTab} onChange={scrollToSection} />
+        <EditorTabNavigation
+          tabs={TABS.filter(({ id }) => isVisibleEditorSection(id))}
+          activeId={activeTab}
+          onChange={scrollToSection}
+        />
 
         <div className="mari-editor-actions flex">
           <button
@@ -1222,7 +1222,7 @@ export function CharacterEditor() {
             <section data-editor-section="colors">
               <ColorsTab formData={formData} updateExtension={updateExtension} avatarUrl={avatarPreview} />
             </section>
-            <section data-editor-section="stats">
+            <section hidden={!isVisibleEditorSection("stats")} data-editor-section="stats">
               <StatsTab formData={formData} updateExtension={updateExtension} />
             </section>
             <section data-editor-section="advanced">
@@ -1591,7 +1591,9 @@ function ConvoTab({
           updateExtension("applyConversationImageInstructionsToNoodle", value)
         }
         schedule={schedule}
-        onEditSchedule={kind === "character" && characterId ? () => setScheduleOpen(true) : undefined}
+        onEditSchedule={
+          UI_VISIBILITY.schedules && kind === "character" && characterId ? () => setScheduleOpen(true) : undefined
+        }
       />
       {/* No chatId: the schedule belongs to the character, so the editor works
         without a chat open. The draft routes fall back to the default connection. */}

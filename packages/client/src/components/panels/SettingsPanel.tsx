@@ -1,3 +1,4 @@
+import { isVisibleSettingsSection, isVisibleSettingsControl, isVisibleChatMode } from "../../lib/ui-visibility";
 // ──────────────────────────────────────────────
 // Panel: Settings (polished)
 // ──────────────────────────────────────────────
@@ -1606,7 +1607,7 @@ function searchSettings(query: string, localize: (englishText: string) => string
 
   const controlResults = SETTINGS_SEARCHABLE_CONTROLS.flatMap((control) => {
     const section = SETTINGS_SECTION_BY_ID.get(control.sectionId);
-    if (!section) return [];
+    if (!section || !isVisibleSettingsSection(section.id) || !isVisibleSettingsControl(control.id)) return [];
     const haystack = [
       control.label,
       localize(control.label),
@@ -1626,6 +1627,7 @@ function searchSettings(query: string, localize: (englishText: string) => string
   });
 
   const sectionResults = SETTINGS_SECTIONS.filter((section) => {
+    if (!isVisibleSettingsSection(section.id)) return false;
     const haystack = [
       section.label,
       localize(section.label),
@@ -2728,7 +2730,9 @@ export function SettingsPanel() {
 
   mountedSettingsTabs.add(settingsTab);
 
-  const activeSections = SETTINGS_SECTIONS.filter((section) => section.tab === settingsTab);
+  const activeSections = SETTINGS_SECTIONS.filter(
+    (section) => isVisibleSettingsSection(section.id) && section.tab === settingsTab,
+  );
   const searchResults = searchSettings(settingsSearch, localize);
 
   const jumpToSection = useCallback(
@@ -2971,26 +2975,28 @@ export function SettingsPanel() {
                       aria-label={localizeUi("settings.appearance.modeNavigation")}
                       className="@container mb-3 grid grid-cols-4 divide-x divide-[var(--border)] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--secondary)]/40"
                     >
-                      {(["app", "conversation", "roleplay", "game"] as const).map((mode) => (
-                        <button
-                          key={mode}
-                          type="button"
-                          aria-pressed={appearanceGroup === mode}
-                          onClick={() => {
-                            setAppearanceGroup(mode);
-                            activePanelRef.current?.scrollTo({ top: 0 });
-                          }}
-                          className={cn(
-                            "min-h-11 min-w-0 whitespace-nowrap px-0.5 py-2 font-semibold transition-colors",
-                            appearanceGroup === mode
-                              ? "bg-[var(--primary)]/15 text-[var(--primary)]"
-                              : "text-[var(--muted-foreground)] hover:bg-[var(--accent)]",
-                          )}
-                          style={{ fontSize: "clamp(0.5rem, 3.5cqi, 0.625rem)" }}
-                        >
-                          {localizeUi(`settings.appearance.modes.${mode}`)}
-                        </button>
-                      ))}
+                      {(["app", "conversation", "roleplay", "game"] as const)
+                        .filter((mode) => mode === "app" || isVisibleChatMode(mode))
+                        .map((mode) => (
+                          <button
+                            key={mode}
+                            type="button"
+                            aria-pressed={appearanceGroup === mode}
+                            onClick={() => {
+                              setAppearanceGroup(mode);
+                              activePanelRef.current?.scrollTo({ top: 0 });
+                            }}
+                            className={cn(
+                              "min-h-11 min-w-0 whitespace-nowrap px-0.5 py-2 font-semibold transition-colors",
+                              appearanceGroup === mode
+                                ? "bg-[var(--primary)]/15 text-[var(--primary)]"
+                                : "text-[var(--muted-foreground)] hover:bg-[var(--accent)]",
+                            )}
+                            style={{ fontSize: "clamp(0.5rem, 3.5cqi, 0.625rem)" }}
+                          >
+                            {localizeUi(`settings.appearance.modes.${mode}`)}
+                          </button>
+                        ))}
                     </div>
                     <AppearanceSettings group={appearanceGroup} />
                   </>

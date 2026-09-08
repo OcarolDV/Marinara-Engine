@@ -1,3 +1,4 @@
+import { isVisibleChatMode } from "../../lib/ui-visibility";
 import { useEffect, useMemo, useState } from "react";
 import { Loader2, Plug, X } from "lucide-react";
 import { useConnections } from "../../hooks/use-connections";
@@ -102,6 +103,7 @@ export function NewChatConnectionGate({ mode, onClose }: NewChatConnectionGatePr
     openRightPanel("connections");
   };
 
+  if (!isVisibleChatMode(mode)) return null;
   return (
     <>
       <div className="fixed inset-0 z-40 bg-black/40 backdrop-blur-[3px]" onClick={onClose} />

@@ -88,6 +88,8 @@ import { HomeNewChatLauncher } from "./HomeNewChatLauncher";
 import { HomeProfessorMariChat, ProfessorMariPixelScene } from "./HomeProfessorMariChat";
 import { RecentChats } from "./RecentChats";
 import { HomeCharacterLibrary } from "./HomeCharacterLibrary";
+import { WritersRoomHome } from "./WritersRoomHome";
+import { UI_VISIBILITY, isVisibleCapability } from "../../lib/ui-visibility";
 
 const MARI_ASSISTANT_ARRIVAL_SHEET = "/sprites/mari/generated/professor-mari-assistant-sheet.png";
 const MARI_ASSISTANT_IDLE = "/sprites/mari/generated/professor-mari-assistant-idle.png";
@@ -1631,10 +1633,12 @@ export function HomeBrowserHub({
   const browserPackages = useMemo(() => selectHomeBrowserPackages(installed.data), [installed.data]);
   const localizedBrowserPackages = useMemo(
     () =>
-      browserPackages.map((item) => ({
-        item,
-        display: resolveCapabilityPackageDisplay(item.manifest, i18n.resolvedLanguage ?? i18n.language),
-      })),
+      browserPackages
+        .filter((item) => isVisibleCapability(item.manifest))
+        .map((item) => ({
+          item,
+          display: resolveCapabilityPackageDisplay(item.manifest, i18n.resolvedLanguage ?? i18n.language),
+        })),
     [browserPackages, i18n.language, i18n.resolvedLanguage],
   );
   const noodleBrowserPackage = useMemo(
@@ -1642,6 +1646,22 @@ export function HomeBrowserHub({
     [browserPackages],
   );
   const [activeTab, setActiveTab] = useState("home");
+  const workspaceView = useUIStore((state) => state.workspaceView);
+  const lastWorkspaceView = useRef<string | null>(null);
+  useEffect(() => {
+    if (lastWorkspaceView.current === workspaceView) return;
+    lastWorkspaceView.current = workspaceView;
+    if (workspaceView === "professor") {
+      pendingProfessorExitTabRef.current = null;
+      setActiveTab("professor");
+      onProfessorChatOpenChange(true);
+    } else if (activeTab === "professor") {
+      pendingProfessorExitTabRef.current = "home";
+      onProfessorChatOpenChange(false);
+    } else {
+      setActiveTab("home");
+    }
+  }, [workspaceView, activeTab, onProfessorChatOpenChange]);
   const [seenNoodleRefreshMarker, setSeenNoodleRefreshMarker] = useState(readSeenNoodleRefreshMarker);
   const [faqOpen, setFaqOpen] = useState(false);
   const [achievementsOpen, setAchievementsOpen] = useState(false);
@@ -1828,7 +1848,10 @@ export function HomeBrowserHub({
 
   const installedIds = useMemo(() => new Set((installed.data ?? []).map((item) => item.id)), [installed.data]);
   const recommendations = useMemo(
-    () => (catalog.data?.packages ?? []).filter((entry) => !installedIds.has(entry.manifest.id)),
+    () =>
+      (catalog.data?.packages ?? []).filter(
+        (entry) => isVisibleCapability(entry.manifest) && !installedIds.has(entry.manifest.id),
+      ),
     [catalog.data?.packages, installedIds],
   );
   const activeRecommendation =
@@ -1873,6 +1896,8 @@ export function HomeBrowserHub({
 
   const address = `marinara/${activeTab}`;
   const selectTab = (tab: string) => {
+    if (tab === "professor") useUIStore.getState().setWorkspaceView("professor");
+    else if (tab === "home" && workspaceView === "professor") useUIStore.getState().setWorkspaceView("workspace");
     setMobileBookmarksOpen(false);
     const professorSelected = tab === "professor";
     if (professorSelected) {
@@ -2222,7 +2247,10 @@ export function HomeBrowserHub({
       data-component="HomeBrowserHub"
     >
       <div className="flex h-full min-h-0 w-full flex-col overflow-hidden border border-[var(--border)]/75 bg-[var(--card)]/65 shadow-2xl shadow-black/25 sm:rounded-xl">
-        <header className="mari-home-browser-chrome relative z-40 shrink-0 border-b border-[var(--marinara-topbar-border)] bg-[var(--marinara-topbar-surface)] shadow-[0_8px_28px_-26px_rgba(0,0,0,0.8)] backdrop-blur-sm">
+        <header
+          hidden={workspaceView !== "extras" && (activeTab === "home" || activeTab === "professor")}
+          className="mari-home-browser-chrome relative z-40 shrink-0 border-b border-[var(--marinara-topbar-border)] bg-[var(--marinara-topbar-surface)] shadow-[0_8px_28px_-26px_rgba(0,0,0,0.8)] backdrop-blur-sm"
+        >
           <div className="flex h-10 min-w-0 items-end gap-1 border-b border-[var(--border)]/45 px-2 sm:gap-2 sm:px-3">
             <div
               className="relative z-10 flex shrink-0 self-center items-center gap-2 pr-1 sm:pr-3"
@@ -2591,8 +2619,10 @@ export function HomeBrowserHub({
         <main
           id={HOME_BROWSER_PANEL_ID}
           ref={contentRef}
-          role="tabpanel"
-          aria-labelledby={homeBrowserTabId(activeTab)}
+          role={
+            workspaceView === "extras" || (activeTab !== "home" && activeTab !== "professor") ? "tabpanel" : "region"
+          }
+          aria-label={activeTab === "professor" ? t("writersRoom.nav.mari") : t("writersRoom.nav.workspace")}
           tabIndex={0}
           className={cn("min-h-0 flex-1", activeTab === "professor" ? "overflow-hidden" : "overflow-y-auto")}
           data-component="HomeBrowserHub.Content"
@@ -2626,6 +2656,8 @@ export function HomeBrowserHub({
                 />
               </div>
             </div>
+          ) : workspaceView !== "extras" ? (
+            <WritersRoomHome />
           ) : (
             <div
               className="relative min-h-full overflow-hidden bg-[radial-gradient(circle_at_12%_8%,oklch(0.79_0.16_205/0.14),transparent_27%),radial-gradient(circle_at_87%_12%,oklch(0.73_0.21_345/0.14),transparent_29%),radial-gradient(circle_at_72%_76%,oklch(0.76_0.19_52/0.08),transparent_28%),var(--background)]"
@@ -2658,7 +2690,7 @@ export function HomeBrowserHub({
                       {t("home.hero.description")}
                     </p>
                   </div>
-                  <div className="grid w-full max-w-md grid-cols-3 gap-2" aria-label={t("home.shortcuts.label")}>
+                  <div className="grid w-full max-w-md grid-cols-2 gap-2" aria-label={t("home.shortcuts.label")}>
                     <HomeNewChatLauncher
                       mode="conversation"
                       className="group !h-auto !min-h-11 !w-full !gap-1.5 !border-[color-mix(in_srgb,var(--home-chat-mode-accent)_35%,var(--border))] !bg-[color-mix(in_srgb,var(--home-chat-mode-accent)_7%,var(--card))] !px-2 !py-1 !text-center sm:!min-h-9"
@@ -2683,18 +2715,20 @@ export function HomeBrowserHub({
                         {t("home.recentChats.mode.roleplay")}
                       </span>
                     </HomeNewChatLauncher>
-                    <HomeNewChatLauncher
-                      mode="game"
-                      className="group !h-auto !min-h-11 !w-full !gap-1.5 !border-[color-mix(in_srgb,var(--home-chat-mode-accent)_35%,var(--border))] !bg-[color-mix(in_srgb,var(--home-chat-mode-accent)_7%,var(--card))] !px-2 !py-1 !text-center sm:!min-h-9"
-                      ariaLabel={t("home.shortcuts.newGame")}
-                    >
-                      <ShortcutIcon tone={HOME_CHAT_MODE_ACCENTS.game}>
-                        <ChatModeIcon mode="game" size="1rem" className="mari-rgb-static-icon" />
-                      </ShortcutIcon>
-                      <span className="text-[0.65rem] font-bold text-[var(--foreground)] sm:text-xs">
-                        {t("home.recentChats.mode.game")}
-                      </span>
-                    </HomeNewChatLauncher>
+                    {UI_VISIBILITY.gameMode && (
+                      <HomeNewChatLauncher
+                        mode="game"
+                        className="group !h-auto !min-h-11 !w-full !gap-1.5 !border-[color-mix(in_srgb,var(--home-chat-mode-accent)_35%,var(--border))] !bg-[color-mix(in_srgb,var(--home-chat-mode-accent)_7%,var(--card))] !px-2 !py-1 !text-center sm:!min-h-9"
+                        ariaLabel={t("home.shortcuts.newGame")}
+                      >
+                        <ShortcutIcon tone={HOME_CHAT_MODE_ACCENTS.game}>
+                          <ChatModeIcon mode="game" size="1rem" className="mari-rgb-static-icon" />
+                        </ShortcutIcon>
+                        <span className="text-[0.65rem] font-bold text-[var(--foreground)] sm:text-xs">
+                          {t("home.recentChats.mode.game")}
+                        </span>
+                      </HomeNewChatLauncher>
+                    )}
                   </div>
                 </section>
                 <div ref={feedShellRef} className="mari-home-feed-shell">
@@ -3120,7 +3154,7 @@ export function HomeBrowserHub({
           )}
         </main>
       </div>
-      {!professorChatActive && activeTab === "home" ? (
+      {!professorChatActive && activeTab === "home" && workspaceView === "extras" ? (
         <FloatingProfessorMari
           pageActive={pageActive}
           enabled={professorMariNavigationEnabled || !hasCompletedOnboarding}

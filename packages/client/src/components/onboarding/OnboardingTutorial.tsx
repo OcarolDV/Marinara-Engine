@@ -1,3 +1,4 @@
+import { isVisibleChatMode } from "../../lib/ui-visibility";
 // ──────────────────────────────────────────────
 // Onboarding Tutorial — first-time guided tour
 // ──────────────────────────────────────────────
@@ -48,7 +49,7 @@ interface TourStep {
   sprite?: { src: string; flip?: boolean };
 }
 
-const STEPS: TourStep[] = [
+const ALL_STEPS: TourStep[] = [
   {
     target: null,
     title: "Welcome to Marinara Engine!",
@@ -98,7 +99,7 @@ const STEPS: TourStep[] = [
   {
     target: "panel-agents",
     title: "Agents",
-    body: "Agents add optional features without making the base app heavy. Open Download Agents here to browse and install image and video generation, trackers, writers, maps, audio and video calls, and various chat games, then enable the ones you want for each chat. You can update or uninstall them from the same catalog.",
+    bodyKey: "onboarding.agents.body",
     side: "bottom",
     openPanel: "agents",
     sprite: { src: "/sprites/mari/Mari_point_up_left.png", flip: true },
@@ -115,7 +116,7 @@ const STEPS: TourStep[] = [
   {
     target: "sidebar-toggle",
     title: "Chats",
-    body: "Now let's open the Chats tab. This is where your Conversations, Roleplays, and Games live. You can create new chats, switch between them, and manage them here.",
+    bodyKey: "onboarding.chats.body",
     side: "right",
     openSidebar: true,
     sprite: { src: "/sprites/mari/Mari_point_middle_left.png" },
@@ -223,6 +224,8 @@ const TUTORIAL_PRIMARY_BUTTON_CLASS =
   "flex items-center gap-1.5 rounded-lg border border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-button-bg-active)] px-4 py-1.5 text-xs font-medium text-[var(--marinara-chat-chrome-button-text-active)] shadow-sm transition-all hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:bg-[var(--marinara-chat-chrome-button-bg-hover)] hover:text-[var(--marinara-chat-chrome-button-text-hover)] active:scale-95";
 const TUTORIAL_DOCUMENTATION_BUTTON_CLASS =
   "flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-button-bg-active)] px-4 py-2.5 text-sm font-semibold text-[var(--marinara-chat-chrome-button-text-active)] shadow-sm transition-all hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:bg-[var(--marinara-chat-chrome-button-bg-hover)] hover:text-[var(--marinara-chat-chrome-button-text-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--marinara-chat-chrome-focus-ring)] active:scale-[0.98]";
+
+const STEPS = ALL_STEPS.filter((step) => !step.chatMode || isVisibleChatMode(step.chatMode));
 
 function getTargetRect(target: string): SpotlightRect | null {
   const el = document.querySelector(`[data-tour="${target}"]`);

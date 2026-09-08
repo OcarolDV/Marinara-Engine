@@ -1,3 +1,4 @@
+import { isVisibleCapability } from "../../lib/ui-visibility";
 import { ChevronRight, Gamepad2 } from "lucide-react";
 import { Modal } from "../ui/Modal";
 import { useInstalledCapabilityPackages } from "../../hooks/use-capability-packages";
@@ -17,6 +18,7 @@ export function ConversationGamesPicker({ chatId, open, onClose }: Props) {
   const games = installed.filter(
     (item) =>
       item.status === "active" &&
+      isVisibleCapability(item.manifest) &&
       item.manifest.kind.includes("turn-game") &&
       item.manifest.entrypoints.client &&
       item.manifest.contributions?.conversationGame,

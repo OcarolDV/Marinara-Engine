@@ -13,6 +13,7 @@ import { cn, getAvatarCropStyle } from "../../lib/utils";
 import { useChatStore } from "../../stores/chat.store";
 import { useTranslation } from "react-i18next";
 import { ChatModeIcon } from "./ChatModeIcon";
+import { isVisibleChatMode } from "../../lib/ui-visibility";
 
 const MODE_BADGE = {
   conversation: {
@@ -78,12 +79,15 @@ function resolveGameBackground(
   return gameAssetFileUrl(assets[resolvedTag]?.path ?? assets[value]?.path);
 }
 
-export function RecentChats() {
+export function RecentChats({ compact = false }: { compact?: boolean }) {
   const { t } = useTranslation();
   const feed = useHomeFeed();
   const gameAssets = useGameAssetManifest();
   const setActiveChatId = useChatStore((state) => state.setActiveChatId);
-  const recentChats = useMemo(() => feed.data?.recentChats ?? [], [feed.data?.recentChats]);
+  const recentChats = useMemo(
+    () => (feed.data?.recentChats ?? []).filter(({ chat }) => isVisibleChatMode(chat.mode)),
+    [feed.data?.recentChats],
+  );
   const characterIds = useMemo(
     () => Array.from(new Set(recentChats.flatMap(({ chat }) => chat.characterIds))),
     [recentChats],
@@ -179,7 +183,12 @@ export function RecentChats() {
 
   return (
     <div
-      className="grid h-full min-h-0 grid-rows-3 gap-1.5 md:auto-rows-fr md:grid-rows-none md:grid-cols-2 md:gap-2.5"
+      className={cn(
+        "grid gap-3 md:grid-cols-2",
+        compact
+          ? "auto-rows-[7rem] md:auto-rows-[9rem]"
+          : "h-full min-h-0 grid-rows-3 md:auto-rows-fr md:grid-rows-none",
+      )}
       data-component="RecentChats"
       data-mobile-limit="3"
       data-narrow-desktop-limit="4"

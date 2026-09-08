@@ -1,3 +1,4 @@
+import { isVisibleEditorSection } from "../../lib/ui-visibility";
 // ──────────────────────────────────────────────
 // Persona Editor — Full-page detail view
 // Replaces the chat area when editing a persona.
@@ -1261,7 +1262,8 @@ function createCharacterDataFromPersona(formData: PersonaFormData): CharacterDat
 export function PersonaEditor() {
   const { t: localizeUi } = useUiTranslation();
   const personaId = useUIStore((s) => s.personaDetailId);
-  const personaInitialTab = useUIStore((s) => s.personaDetailInitialTab) as TabId | null;
+  const requestedTab = useUIStore((s) => s.personaDetailInitialTab) as TabId | null;
+  const personaInitialTab = requestedTab && isVisibleEditorSection(requestedTab) ? requestedTab : "metadata";
   const closeDetail = useUIStore((s) => s.closePersonaDetail);
   const { data: allPersonas, isLoading } = usePersonas();
   const createCharacter = useCreateCharacter();
@@ -2038,7 +2040,11 @@ export function PersonaEditor() {
           </div>
         </div>
 
-        <EditorTabNavigation tabs={TABS} activeId={activeTab} onChange={scrollToSection} />
+        <EditorTabNavigation
+          tabs={TABS.filter(({ id }) => isVisibleEditorSection(id))}
+          activeId={activeTab}
+          onChange={scrollToSection}
+        />
 
         <div className="mari-editor-actions flex">
           <button
@@ -2122,7 +2128,7 @@ export function PersonaEditor() {
             <section data-editor-section="colors">
               <PersonaColorsTab formData={formData} updateField={updateField} avatarUrl={avatarPreview} />
             </section>
-            <section data-editor-section="stats">
+            <section hidden={!isVisibleEditorSection("stats")} data-editor-section="stats">
               <PersonaStatsTab formData={formData} updateField={updateField} />
             </section>
           </div>

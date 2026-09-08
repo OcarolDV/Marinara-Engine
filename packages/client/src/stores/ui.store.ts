@@ -36,6 +36,7 @@ export type Panel =
   | "bot-browser"
   | "extensions";
 export type ChatModeShortcut = "conversation" | "roleplay" | "game";
+export type WorkspaceView = "workspace" | "professor" | "extras";
 export const CHARACTER_LIBRARY_SORT_OPTIONS = ["name-asc", "name-desc", "newest", "oldest", "favorites"] as const;
 export type CharacterLibrarySort = (typeof CHARACTER_LIBRARY_SORT_OPTIONS)[number];
 export type CardLibraryKind = "characters" | "personas";
@@ -567,6 +568,9 @@ export type MariPanelSortMode = "az" | "za" | "newest" | "oldest";
 export type MariEditViewMode = "easy" | "raw";
 
 interface UIState {
+  /** Transient home destination; kept out of synced and persisted preferences. */
+  workspaceView: WorkspaceView;
+  setWorkspaceView: (view: WorkspaceView) => void;
   showHomeBrowserAddressBar: boolean;
   showHomeBrowserDesktopBookmarksOnOtherTabs: boolean;
   showHomeBrowserMobileBookmarksOnOtherTabs: boolean;
@@ -1657,10 +1661,12 @@ export const useUIStore = create<UIState>()(
         if (!deferEditorLeave(state, patch, apply)) apply();
       };
       return {
+        workspaceView: "workspace",
+        setWorkspaceView: (workspaceView) => set({ workspaceView }),
         showHomeBrowserAddressBar: true,
         showHomeBrowserDesktopBookmarksOnOtherTabs: true,
         showHomeBrowserMobileBookmarksOnOtherTabs: true,
-        sidebarOpen: true,
+        sidebarOpen: false,
         sidebarWidth: 320,
         rightPanelOpen: false,
         rightPanelWidth: 320,

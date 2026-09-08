@@ -2,6 +2,7 @@
 // Layout: Chat Sidebar (polished with rich buttons)
 // ──────────────────────────────────────────────
 import { hasEditorLeaveHandler } from "../../lib/editor-leave";
+import { VISIBLE_CHAT_MODES, isVisibleChatMode, UI_VISIBILITY } from "../../lib/ui-visibility";
 import {
   MessageSquareText,
   Search,
@@ -315,7 +316,7 @@ export function ChatSidebar() {
 
   useEffect(() => {
     if (!chatModeShortcutRequest) return;
-    setActiveTab(chatModeShortcutRequest.mode);
+    setActiveTab(isVisibleChatMode(chatModeShortcutRequest.mode) ? chatModeShortcutRequest.mode : "conversation");
     setSearchQuery("");
     setActiveTag(null);
     setTagsExpanded(false);
@@ -585,7 +586,7 @@ export function ChatSidebar() {
     // 1. Tab sync — once per chat switch
     if (!s.tabSynced) {
       const chatMode = chat.mode;
-      if (chatMode === "conversation" || chatMode === "roleplay" || chatMode === "game") {
+      if (isVisibleChatMode(chatMode)) {
         setActiveTab(chatMode);
       }
       // Clear search so the active chat isn't hidden by a stale filter.
@@ -1310,7 +1311,7 @@ export function ChatSidebar() {
       {/* Tabs */}
       <div className="px-3 pt-3">
         <div className="mari-chrome-segmented">
-          {(["conversation", "roleplay", "game"] as const).map((tab) => {
+          {VISIBLE_CHAT_MODES.map((tab) => {
             const cfg = MODE_CONFIG[tab];
             const isActive = activeTab === tab;
             const tabUnread =
@@ -1329,7 +1330,7 @@ export function ChatSidebar() {
               >
                 <span className="shrink-0 leading-none">{cfg.icon}</span>
                 <span className="inline-flex min-h-[1rem] items-center whitespace-nowrap pb-px leading-normal">
-                  {localize(cfg.shortLabel)}
+                  {localizeUi(`settings.modes.${tab}`)}
                 </span>
                 {tabUnread > 0 && !isActive && (
                   <span className="absolute -top-1 -right-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-md bg-red-500 px-0.5 text-[0.5rem] font-bold leading-none text-white">
@@ -1660,7 +1661,7 @@ export function ChatSidebar() {
 
       {/* ── User Status Selector ── */}
       <UserStatusFooter
-        showScheduleManager={activeTab === "conversation"}
+        showScheduleManager={UI_VISIBILITY.schedules && activeTab === "conversation"}
         onOpenScheduleManager={() => setScheduleManagerOpen(true)}
       />
 

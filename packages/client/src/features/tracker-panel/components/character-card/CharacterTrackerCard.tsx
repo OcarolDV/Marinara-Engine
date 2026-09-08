@@ -1,3 +1,4 @@
+import { UI_VISIBILITY } from "../../../../lib/ui-visibility";
 import type { ReactNode } from "react";
 import { Eye, HeartPulse, Maximize2, Shirt, X } from "lucide-react";
 import {
@@ -191,7 +192,7 @@ export function CharacterTrackerCard({
   const customFields = Object.entries((character.customFields ?? {}) as Record<string, unknown>).map(
     ([name, value]) => [name, value, trackerEditableText(value)] as const,
   );
-  const characterStats = Array.isArray(character.stats) ? character.stats : [];
+  const characterStats = UI_VISIBILITY.rpgStats && Array.isArray(character.stats) ? character.stats : [];
   const avatarMedia = characterPicture ?? character.avatarPath ?? null;
   const compactAvatarUpload = characterPicture ? undefined : onUploadAvatar;
   const characterFieldKey = (field: HideableCharacterField) =>
@@ -412,7 +413,7 @@ export function CharacterTrackerCard({
         </div>
       )}
 
-      {(characterStats.length > 0 || addMode) && (
+      {UI_VISIBILITY.rpgStats && (characterStats.length > 0 || addMode) && (
         <div className={CHARACTER_STAT_BLOCK_CLASS}>
           <StatList
             stats={characterStats}

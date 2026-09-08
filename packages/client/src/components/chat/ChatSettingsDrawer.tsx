@@ -1,3 +1,4 @@
+import { UI_VISIBILITY, isVisibleCommand, isVisibleCapability, isVisibleChatMode } from "../../lib/ui-visibility";
 // ──────────────────────────────────────────────
 // Chat: Settings Drawer — per-chat configuration
 // ──────────────────────────────────────────────
@@ -1330,6 +1331,7 @@ export function ChatSettingsDrawer({
   };
   const availableConversationCommandOptions = useMemo(() => {
     return CONVERSATION_COMMAND_TOGGLE_OPTIONS.filter((command) => {
+      if (!isVisibleCommand(command.id)) return false;
       const agentId = CONVERSATION_COMMAND_AGENT_IDS[command.id];
       return !agentId || installedAgentIds.has(agentId);
     });
@@ -1603,7 +1605,11 @@ export function ChatSettingsDrawer({
   const activeTrackerAgents = useMemo(
     () =>
       availableAgents.filter(
-        (agent) => agent.category === "tracker" && activeAgentIds.includes(agent.id) && !agent.runtimeDisabled,
+        (agent) =>
+          isVisibleCapability(agent) &&
+          agent.category === "tracker" &&
+          activeAgentIds.includes(agent.id) &&
+          !agent.runtimeDisabled,
       ),
     [activeAgentIds, availableAgents],
   );
@@ -2147,7 +2153,12 @@ export function ChatSettingsDrawer({
     () =>
       metadata.enableAgents === true && isRoleplayMode
         ? availableAgents.filter((agent) => {
-            if (!activeAgentIds.includes(agent.id) || !hasStandaloneRoleplayAgentSettings(agent.id)) return false;
+            if (
+              !isVisibleCapability(agent) ||
+              !activeAgentIds.includes(agent.id) ||
+              !hasStandaloneRoleplayAgentSettings(agent.id)
+            )
+              return false;
             if (agent.id === "hierarchical-maps") return Boolean(mapsPackage);
             if (agent.id === "long-term-memory") return Boolean(ltmPackage);
             if (agent.id === STORYBOARD_AGENT_ID || agent.id === "beholder") return true;
@@ -6386,122 +6397,132 @@ export function ChatSettingsDrawer({
                   />
                 )}
 
-                {/* Conversation schedules toggle */}
-                <SettingsSwitch
-                  label={localizeUi("ui.chat.chatsettingsdrawer.schedules")}
-                  description={localizeUi(
-                    "ui.chat.chatsettingsdrawer.optionalCharacterRoutinesForAvailabilityAndDelays",
-                  )}
-                  checked={conversationSchedulesEnabled}
-                  onChange={(nextEnabled) => {
-                    if (nextEnabled && !hasGeneratedConversationSchedules) {
-                      if (chatCharIds.length === 0) {
-                        updateMeta.mutate({ id: chat.id, conversationSchedulesEnabled: nextEnabled });
-                        return;
-                      }
-                      void generateConversationSchedules(false);
-                      return;
-                    }
-                    updateMeta.mutate({ id: chat.id, conversationSchedulesEnabled: nextEnabled });
-                  }}
-                  labelPosition="start"
-                  className={cn(
-                    "justify-between rounded-md px-3 py-2.5 text-left",
-                    conversationSchedulesEnabled
-                      ? "bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/30"
-                      : "bg-[var(--secondary)] hover:bg-[var(--accent)]",
-                  )}
-                  labelClassName="text-xs font-medium"
-                />
-
-                <div ref={scheduleControlsRef} className="scroll-mt-2 space-y-2">
-                  {/* Schedule status */}
-                  <div className="flex items-center gap-2 rounded-lg bg-[var(--secondary)] px-3 py-2.5">
-                    <div className="flex-1 min-w-0">
-                      <span className="text-[0.6875rem] leading-snug text-[var(--muted-foreground)]">
-                        {!conversationSchedulesEnabled
-                          ? localizeUi(
-                              "ui.chat.chatsettingsdrawer.schedulesAreOffAutonomyUsesTalkativenessAndYourStatus",
-                            )
-                          : hasGeneratedConversationSchedules
-                            ? localizeUi(
-                                "ui.chat.chatsettingsdrawer.schedulesGeneratedStatusIsDerivedFromCharacterRoutines",
-                              )
-                            : localizeUi("ui.chat.chatsettingsdrawer.schedulesEnabledGenerateRoutinesWhenYouReReady")}
-                      </span>
-                      <p className="text-[0.59375rem] mt-0.5 text-[var(--muted-foreground)]/60">
-                        {conversationSchedulesEnabled
-                          ? localizeUi("ui.chat.chatsettingsdrawer.schedulesRefreshOnlyAfterYouEnableOrRegenerateThem")
-                          : localizeUi("ui.chat.chatsettingsdrawer.turnSchedulesOnIfYouWantAvailabilityAndBusy")}
-                      </p>
-                    </div>
-                    <button
-                      onClick={async () => {
-                        await generateConversationSchedules(true);
-                      }}
-                      disabled={isRegeneratingSchedules || chatCharIds.length === 0}
-                      className={cn(
-                        "flex items-center gap-1 rounded-md px-2 py-1 text-[0.625rem] font-medium transition-colors",
-                        isRegeneratingSchedules || chatCharIds.length === 0
-                          ? "cursor-not-allowed text-[var(--muted-foreground)]/60"
-                          : "text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
+                {UI_VISIBILITY.schedules && (
+                  <>
+                    {/* Conversation schedules toggle */}
+                    <SettingsSwitch
+                      label={localizeUi("ui.chat.chatsettingsdrawer.schedules")}
+                      description={localizeUi(
+                        "ui.chat.chatsettingsdrawer.optionalCharacterRoutinesForAvailabilityAndDelays",
                       )}
-                      title={
-                        isRegeneratingSchedules
-                          ? localizeUi("ui.chat.chatsettingsdrawer.regeneratingSchedules")
-                          : localizeUi("ui.chat.chatsettingsdrawer.generateSchedules")
-                      }
-                    >
-                      <RefreshCw size="0.6875rem" className={cn(isRegeneratingSchedules && "animate-spin")} />
-                      {isRegeneratingSchedules
-                        ? localizeUi("ui.chat.chatsettingsdrawer.regenerating")
-                        : hasGeneratedConversationSchedules
-                          ? localizeUi("ui.agents.secretplotpanel.regenerate")
-                          : localizeUi("ui.characters.characterclipcard.generate")}
-                    </button>
-                  </div>
+                      checked={conversationSchedulesEnabled}
+                      onChange={(nextEnabled) => {
+                        if (nextEnabled && !hasGeneratedConversationSchedules) {
+                          if (chatCharIds.length === 0) {
+                            updateMeta.mutate({ id: chat.id, conversationSchedulesEnabled: nextEnabled });
+                            return;
+                          }
+                          void generateConversationSchedules(false);
+                          return;
+                        }
+                        updateMeta.mutate({ id: chat.id, conversationSchedulesEnabled: nextEnabled });
+                      }}
+                      labelPosition="start"
+                      className={cn(
+                        "justify-between rounded-md px-3 py-2.5 text-left",
+                        conversationSchedulesEnabled
+                          ? "bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/30"
+                          : "bg-[var(--secondary)] hover:bg-[var(--accent)]",
+                      )}
+                      labelClassName="text-xs font-medium"
+                    />
 
-                  <div className="rounded-lg bg-[var(--secondary)]/55 px-3 py-2.5 ring-1 ring-[var(--border)]/80">
-                    <ConversationTimeZoneSelect compact />
-                  </div>
+                    <div ref={scheduleControlsRef} className="scroll-mt-2 space-y-2">
+                      {/* Schedule status */}
+                      <div className="flex items-center gap-2 rounded-lg bg-[var(--secondary)] px-3 py-2.5">
+                        <div className="flex-1 min-w-0">
+                          <span className="text-[0.6875rem] leading-snug text-[var(--muted-foreground)]">
+                            {!conversationSchedulesEnabled
+                              ? localizeUi(
+                                  "ui.chat.chatsettingsdrawer.schedulesAreOffAutonomyUsesTalkativenessAndYourStatus",
+                                )
+                              : hasGeneratedConversationSchedules
+                                ? localizeUi(
+                                    "ui.chat.chatsettingsdrawer.schedulesGeneratedStatusIsDerivedFromCharacterRoutines",
+                                  )
+                                : localizeUi(
+                                    "ui.chat.chatsettingsdrawer.schedulesEnabledGenerateRoutinesWhenYouReReady",
+                                  )}
+                          </span>
+                          <p className="text-[0.59375rem] mt-0.5 text-[var(--muted-foreground)]/60">
+                            {conversationSchedulesEnabled
+                              ? localizeUi(
+                                  "ui.chat.chatsettingsdrawer.schedulesRefreshOnlyAfterYouEnableOrRegenerateThem",
+                                )
+                              : localizeUi("ui.chat.chatsettingsdrawer.turnSchedulesOnIfYouWantAvailabilityAndBusy")}
+                          </p>
+                        </div>
+                        <button
+                          onClick={async () => {
+                            await generateConversationSchedules(true);
+                          }}
+                          disabled={isRegeneratingSchedules || chatCharIds.length === 0}
+                          className={cn(
+                            "flex items-center gap-1 rounded-md px-2 py-1 text-[0.625rem] font-medium transition-colors",
+                            isRegeneratingSchedules || chatCharIds.length === 0
+                              ? "cursor-not-allowed text-[var(--muted-foreground)]/60"
+                              : "text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
+                          )}
+                          title={
+                            isRegeneratingSchedules
+                              ? localizeUi("ui.chat.chatsettingsdrawer.regeneratingSchedules")
+                              : localizeUi("ui.chat.chatsettingsdrawer.generateSchedules")
+                          }
+                        >
+                          <RefreshCw size="0.6875rem" className={cn(isRegeneratingSchedules && "animate-spin")} />
+                          {isRegeneratingSchedules
+                            ? localizeUi("ui.chat.chatsettingsdrawer.regenerating")
+                            : hasGeneratedConversationSchedules
+                              ? localizeUi("ui.agents.secretplotpanel.regenerate")
+                              : localizeUi("ui.characters.characterclipcard.generate")}
+                        </button>
+                      </div>
 
-                  {hasGeneratedConversationSchedules && onOpenScheduleEditor && (
-                    <div className="mt-2 space-y-1.5">
-                      <span className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">
-                        {localizeUi("ui.chat.chatsettingsdrawer.editSchedules")}
-                      </span>
-                      {chatCharIds.map((charId) => {
-                        const schedule = (metadata.characterSchedules as Record<string, WeekSchedule> | undefined)?.[
-                          charId
-                        ];
-                        const scheduledDayCount = schedule?.days
-                          ? Object.values(schedule.days).filter((blocks) => Array.isArray(blocks) && blocks.length > 0)
-                              .length
-                          : 0;
-                        return (
-                          <button
-                            key={charId}
-                            type="button"
-                            onClick={() => onOpenScheduleEditor(charId)}
-                            className="flex w-full items-center justify-between gap-3 rounded-lg bg-[var(--secondary)] px-3 py-2.5 text-left transition-colors hover:bg-[var(--accent)]/50"
-                          >
-                            <span className="min-w-0 flex-1 truncate text-xs font-medium">
-                              {charNameMap.get(charId) ?? "Unknown"}
-                            </span>
-                            <span className="shrink-0 text-[0.625rem] text-[var(--muted-foreground)]">
-                              {schedule
-                                ? localizeUi("ui.chat.chatsettingsdrawer.value1DayValue2Scheduled", {
-                                    value1: scheduledDayCount,
-                                    value2: scheduledDayCount === 1 ? "" : localizeUi("ui.noodle.stageprofileview.s"),
-                                  })
-                                : localizeUi("ui.chat.chatsettingsdrawer.createSchedule")}
-                            </span>
-                          </button>
-                        );
-                      })}
+                      <div className="rounded-lg bg-[var(--secondary)]/55 px-3 py-2.5 ring-1 ring-[var(--border)]/80">
+                        <ConversationTimeZoneSelect compact />
+                      </div>
+
+                      {hasGeneratedConversationSchedules && onOpenScheduleEditor && (
+                        <div className="mt-2 space-y-1.5">
+                          <span className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">
+                            {localizeUi("ui.chat.chatsettingsdrawer.editSchedules")}
+                          </span>
+                          {chatCharIds.map((charId) => {
+                            const schedule = (
+                              metadata.characterSchedules as Record<string, WeekSchedule> | undefined
+                            )?.[charId];
+                            const scheduledDayCount = schedule?.days
+                              ? Object.values(schedule.days).filter(
+                                  (blocks) => Array.isArray(blocks) && blocks.length > 0,
+                                ).length
+                              : 0;
+                            return (
+                              <button
+                                key={charId}
+                                type="button"
+                                onClick={() => onOpenScheduleEditor(charId)}
+                                className="flex w-full items-center justify-between gap-3 rounded-lg bg-[var(--secondary)] px-3 py-2.5 text-left transition-colors hover:bg-[var(--accent)]/50"
+                              >
+                                <span className="min-w-0 flex-1 truncate text-xs font-medium">
+                                  {charNameMap.get(charId) ?? "Unknown"}
+                                </span>
+                                <span className="shrink-0 text-[0.625rem] text-[var(--muted-foreground)]">
+                                  {schedule
+                                    ? localizeUi("ui.chat.chatsettingsdrawer.value1DayValue2Scheduled", {
+                                        value1: scheduledDayCount,
+                                        value2:
+                                          scheduledDayCount === 1 ? "" : localizeUi("ui.noodle.stageprofileview.s"),
+                                      })
+                                    : localizeUi("ui.chat.chatsettingsdrawer.createSchedule")}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
+                  </>
+                )}
               </div>
             </Section>
           )}
@@ -6792,45 +6813,51 @@ export function ChatSettingsDrawer({
                       </AgentSettingsCard>
                     ) : null}
 
-                    {/* Schedule generation preferences — free-form authorial guidance */}
-                    <label className="flex flex-col gap-1.5">
-                      <span className="inline-flex items-center gap-1.5 text-xs font-medium">
-                        {localizeUi("ui.chat.chatsettingsdrawer.scheduleGenerationPreferences")}
-                        <HelpTooltip
-                          text={localizeUi(
-                            "ui.chat.chatsettingsdrawer.freeFormGuidanceThatSteersHowCharacterSchedulesAre",
-                          )}
-                        />
-                      </span>
-                      <textarea
-                        value={scheduleGenerationPreferences}
-                        onChange={(e) => setScheduleGenerationPreferences(e.target.value)}
-                        placeholder={localizeUi("ui.chat.chatsettingsdrawer.eGMakeEveryoneGoToSleepBeforeMidnight")}
-                        className="min-h-[5rem] resize-y rounded-lg border border-[var(--border)] bg-[var(--secondary)] p-2.5 text-[0.6875rem] text-[var(--foreground)] outline-none transition-colors focus:border-[var(--primary)]/50 placeholder:text-[var(--muted-foreground)]/40"
-                      />
-                      <p className="text-[0.59375rem] text-[var(--muted-foreground)]/70">
-                        {localizeUi("ui.chat.chatsettingsdrawer.globalSettingAppliesToEveryConversationChatSNext")}
-                      </p>
-                    </label>
-
-                    {/* Active schedule-generation preference indicator */}
-                    {scheduleGenerationPreferences.trim() && (
-                      <div
-                        className="rounded-lg border border-[var(--primary)]/30 bg-[var(--primary)]/10 px-3 py-2.5"
-                        title={scheduleGenerationPreferences.trim()}
-                      >
-                        <div className="min-w-0 flex-1">
-                          <span className="block text-[0.6875rem] font-medium leading-snug text-[var(--foreground)]">
-                            {localizeUi("ui.chat.chatsettingsdrawer.scheduleGenerationPreferenceActive")}
+                    {UI_VISIBILITY.schedules && (
+                      <>
+                        {/* Schedule generation preferences — free-form authorial guidance */}
+                        <label className="flex flex-col gap-1.5">
+                          <span className="inline-flex items-center gap-1.5 text-xs font-medium">
+                            {localizeUi("ui.chat.chatsettingsdrawer.scheduleGenerationPreferences")}
+                            <HelpTooltip
+                              text={localizeUi(
+                                "ui.chat.chatsettingsdrawer.freeFormGuidanceThatSteersHowCharacterSchedulesAre",
+                              )}
+                            />
                           </span>
-                          <p className="mt-0.5 truncate text-[0.625rem] italic text-[var(--muted-foreground)]">
-                            "{scheduleGenerationPreferences.trim()}"
+                          <textarea
+                            value={scheduleGenerationPreferences}
+                            onChange={(e) => setScheduleGenerationPreferences(e.target.value)}
+                            placeholder={localizeUi("ui.chat.chatsettingsdrawer.eGMakeEveryoneGoToSleepBeforeMidnight")}
+                            className="min-h-[5rem] resize-y rounded-lg border border-[var(--border)] bg-[var(--secondary)] p-2.5 text-[0.6875rem] text-[var(--foreground)] outline-none transition-colors focus:border-[var(--primary)]/50 placeholder:text-[var(--muted-foreground)]/40"
+                          />
+                          <p className="text-[0.59375rem] text-[var(--muted-foreground)]/70">
+                            {localizeUi("ui.chat.chatsettingsdrawer.globalSettingAppliesToEveryConversationChatSNext")}
                           </p>
-                          <p className="mt-1 text-[0.59375rem] text-[var(--muted-foreground)]/70">
-                            {localizeUi("ui.chat.chatsettingsdrawer.willBeAppliedTheNextTimeSchedulesAreRegenerated")}
-                          </p>
-                        </div>
-                      </div>
+                        </label>
+
+                        {/* Active schedule-generation preference indicator */}
+                        {scheduleGenerationPreferences.trim() && (
+                          <div
+                            className="rounded-lg border border-[var(--primary)]/30 bg-[var(--primary)]/10 px-3 py-2.5"
+                            title={scheduleGenerationPreferences.trim()}
+                          >
+                            <div className="min-w-0 flex-1">
+                              <span className="block text-[0.6875rem] font-medium leading-snug text-[var(--foreground)]">
+                                {localizeUi("ui.chat.chatsettingsdrawer.scheduleGenerationPreferenceActive")}
+                              </span>
+                              <p className="mt-0.5 truncate text-[0.625rem] italic text-[var(--muted-foreground)]">
+                                "{scheduleGenerationPreferences.trim()}"
+                              </p>
+                              <p className="mt-1 text-[0.59375rem] text-[var(--muted-foreground)]/70">
+                                {localizeUi(
+                                  "ui.chat.chatsettingsdrawer.willBeAppliedTheNextTimeSchedulesAreRegenerated",
+                                )}
+                              </p>
+                            </div>
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
                 )}
@@ -6924,7 +6951,8 @@ export function ChatSettingsDrawer({
                       .filter(
                         (c) =>
                           c.id !== chat.id &&
-                          (c.mode === "roleplay" || c.mode === "game") &&
+                          isVisibleChatMode(c.mode) &&
+                          c.mode !== "conversation" &&
                           !c.connectedChatId &&
                           includesTextForMatch(getConnectedChatDisplayName(c), connectionSearch),
                       )
@@ -8922,7 +8950,9 @@ export function ChatSettingsDrawer({
                               },
                             ] as const
                           ).map((cat) => {
-                            const catAgents = availableAgents.filter((a) => a.category === cat.key);
+                            const catAgents = availableAgents.filter(
+                              (a) => isVisibleCapability(a) && a.category === cat.key,
+                            );
                             const activeInCat = catAgents
                               .filter(
                                 (agent) =>

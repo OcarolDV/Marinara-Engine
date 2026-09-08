@@ -1,3 +1,4 @@
+import { UI_VISIBILITY, isVisibleCapability, isVisibleChatMode } from "../../lib/ui-visibility";
 import { createPortal } from "react-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
@@ -1164,7 +1165,9 @@ function AuthorNotesButton({
 type RoleplaySurfaceProps = {
   activeChatId: string;
   chat: ChatData | null | undefined;
-  allChats: Array<{ id: string; name: string; metadata?: string | Record<string, unknown> | null }> | undefined;
+  allChats:
+    | Array<{ id: string; name: string; mode: string; metadata?: string | Record<string, unknown> | null }>
+    | undefined;
   chatMeta: Record<string, any>;
   chatMode: string;
   isRoleplay: boolean;
@@ -1405,7 +1408,8 @@ export function ChatRoleplaySurface({
   const enabledConversationCapabilities =
     chatMeta.enableAgents === true
       ? installedCapabilities.filter((item) => {
-          if (item.status !== "active" || !item.manifest.entrypoints.client) return false;
+          if (!isVisibleCapability(item.manifest) || item.status !== "active" || !item.manifest.entrypoints.client)
+            return false;
           if (item.manifest.kind.includes("conversation-calls")) return false;
           const contributedAgentIds = item.manifest.contributions?.agentDetail?.agentIds ?? [];
           return activeAgentIds.includes(item.id) || contributedAgentIds.some((id) => activeAgentIds.includes(id));
@@ -1429,6 +1433,9 @@ export function ChatRoleplaySurface({
   const streamedMessageId = useChatStore((s) => s.streamedMessageIds.get(activeChatId) ?? null);
   const hasMobileDraftInput = useChatStore((s) => isMobileToolbarViewport && s.hasCurrentInput);
   const hasLiveStream = isStreaming;
+  const visibleConnectedChat = allChats?.find(
+    (candidate) => candidate.id === chat?.connectedChatId && isVisibleChatMode(candidate.mode),
+  );
   const linkedChatName = chat?.connectedChatId
     ? getConnectedChatDisplayName(allChats?.find((c) => c.id === chat.connectedChatId))
     : undefined;
@@ -1946,7 +1953,7 @@ export function ChatRoleplaySurface({
                         panelAction="gallery"
                         onClick={onOpenGallery}
                       />
-                      {chat?.connectedChatId && (
+                      {visibleConnectedChat && (
                         <ChatToolbarButton
                           icon={<ArrowRightLeft size="0.875rem" />}
                           helpTarget="connected-chat"
@@ -1955,7 +1962,7 @@ export function ChatRoleplaySurface({
                               ? t("chat.toolbar.switchTo", { name: linkedChatName })
                               : t("chat.toolbar.connectedChat")
                           }
-                          onClick={() => useChatStore.getState().setActiveChatId(chat.connectedChatId!)}
+                          onClick={() => useChatStore.getState().setActiveChatId(visibleConnectedChat.id)}
                         />
                       )}
                       <ChatMessageSearch chatId={activeChatId} />
@@ -2078,7 +2085,7 @@ export function ChatRoleplaySurface({
                           panelAction="gallery"
                           onClick={onOpenGallery}
                         />
-                        {chat?.connectedChatId && (
+                        {visibleConnectedChat && (
                           <ChatToolbarButton
                             icon={<ArrowRightLeft size="0.875rem" />}
                             helpTarget="connected-chat"
@@ -2087,7 +2094,7 @@ export function ChatRoleplaySurface({
                                 ? t("chat.toolbar.switchTo", { name: linkedChatName })
                                 : t("chat.toolbar.connectedChat")
                             }
-                            onClick={() => useChatStore.getState().setActiveChatId(chat.connectedChatId!)}
+                            onClick={() => useChatStore.getState().setActiveChatId(visibleConnectedChat.id)}
                           />
                         )}
                         <ChatMessageSearch chatId={activeChatId} />
@@ -2165,7 +2172,7 @@ export function ChatRoleplaySurface({
                         panelAction="gallery"
                         onClick={onOpenGallery}
                       />
-                      {chat?.connectedChatId && (
+                      {visibleConnectedChat && (
                         <ChatToolbarButton
                           icon={<ArrowRightLeft size="0.875rem" />}
                           helpTarget="connected-chat"
@@ -2174,7 +2181,7 @@ export function ChatRoleplaySurface({
                               ? t("chat.toolbar.switchTo", { name: linkedChatName })
                               : t("chat.toolbar.connectedChat")
                           }
-                          onClick={() => useChatStore.getState().setActiveChatId(chat.connectedChatId!)}
+                          onClick={() => useChatStore.getState().setActiveChatId(visibleConnectedChat.id)}
                         />
                       )}
                       <ChatMessageSearch chatId={activeChatId} />
@@ -2190,7 +2197,7 @@ export function ChatRoleplaySurface({
               </div>
             </div>
 
-            {encounterActive && (
+            {UI_VISIBILITY.combat && encounterActive && (
               <Suspense fallback={null}>
                 <EncounterModal />
               </Suspense>

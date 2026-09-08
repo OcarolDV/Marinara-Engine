@@ -1,3 +1,4 @@
+import { isVisibleCommand, UI_VISIBILITY } from "./ui-visibility";
 // ──────────────────────────────────────────────
 // Slash Commands — SillyTavern-style / commands
 // ──────────────────────────────────────────────
@@ -1426,9 +1427,10 @@ function buildConversationGameSlashCommands(games: readonly ConversationGameSlas
 }
 
 function getAvailableSlashCommands(availability: SlashCommandAvailability = {}): SlashCommand[] {
-  return [...COMMANDS, ...buildConversationGameSlashCommands(availability.conversationGames)].filter((command) =>
-    isSlashCommandAvailable(command, availability),
-  );
+  return [
+    ...COMMANDS,
+    ...buildConversationGameSlashCommands(UI_VISIBILITY.turnGames ? availability.conversationGames : []),
+  ].filter((command) => isVisibleCommand(command.name) && isSlashCommandAvailable(command, availability));
 }
 
 /** Find a matching command for the given input. */

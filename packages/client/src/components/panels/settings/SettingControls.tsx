@@ -1,3 +1,4 @@
+import { isVisibleSettingsSection, isVisibleSettingsControl } from "../../../lib/ui-visibility";
 import { useEffect, useId, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import { Bell, BellRing, Loader2, Play, Trash2, Upload, Volume2 } from "lucide-react";
 import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
@@ -65,6 +66,11 @@ export function SettingsSection({
 }) {
   const localize = useLocalizedUiText();
   const localizedDescription = localizeStringNode(description, localize);
+  if (
+    anchorId?.startsWith("settings-section-") &&
+    !isVisibleSettingsSection(anchorId.slice("settings-section-".length))
+  )
+    return null;
 
   return (
     <section
@@ -633,6 +639,11 @@ export function SettingsCheckbox({
   const localize = useLocalizedUiText();
   const localizedLabel = localizeStringNode(label, localize);
   const localizedDescription = localizeStringNode(description, localize);
+  if (
+    anchorId?.startsWith("settings-control-") &&
+    !isVisibleSettingsControl(anchorId.slice("settings-control-".length))
+  )
+    return null;
   const input = (
     <input
       type="checkbox"
@@ -762,6 +773,11 @@ export function SettingsSwitch({
   const localizedLabel = localizeStringNode(label, localize);
   const localizedDescription = localizeStringNode(description, localize);
   const localizedTitle = title ? localize(title) : undefined;
+  if (
+    anchorId?.startsWith("settings-control-") &&
+    !isVisibleSettingsControl(anchorId.slice("settings-control-".length))
+  )
+    return null;
   const switchControl = (
     <label
       htmlFor={inputId}
