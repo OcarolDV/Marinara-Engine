@@ -4,6 +4,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Updated the README introduction with the VN fork's purpose, current UI changes, preserved Mari capabilities, a current Workspace screenshot, and the distinction from upstream releases.
+
 - Added Marinara's logo and Mari greeting artwork to a compact Workspace welcome area, with a short description, a warmer background, and a clear conversation action. Existing navigation and chat creation flows remain in place.
 
 - Simplified recent chats into readable rows, reduced Workspace decoration, and made shared controls and default themes quieter. Settings now uses the desktop workspace with larger category tabs and plain section dividers; closing it returns to the existing session. Mari tools, permissions, and editing flows are unchanged.
