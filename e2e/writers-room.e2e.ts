@@ -181,3 +181,33 @@ test("tools disclosure supports keyboard access and tablet navigation fits", asy
   for (let index = 1; index < bounds.length; index++)
     expect(bounds[index]!.left).toBeGreaterThanOrEqual(bounds[index - 1]!.right);
 });
+
+test("Settings uses available space and returns to the same Mari draft", async ({ page, isMobile }) => {
+  await page.locator('[data-component="TopBar"]').getByRole("button", { name: "Professor Mari", exact: true }).click();
+  const draft = page.getByRole("textbox", { name: "Ask Professor Mari", exact: true });
+  await draft.fill("Review Mira's dialogue without changing her character card.");
+  const original = await draft.elementHandle();
+  await openTool(page, "Settings");
+  const settings = page.locator('[data-panel-key="settings"]:visible');
+  const search = settings.getByRole("textbox", { name: "Search settings", exact: true });
+  await expect(search).toBeVisible();
+  const bounds = await settings.boundingBox();
+  expect(bounds!.width).toBeGreaterThan(page.viewportSize()!.width - 30);
+  if (!isMobile) {
+    expect(await original!.evaluate((element) => !!element.closest("[inert]"))).toBe(true);
+    await expect(page.getByRole("separator", { name: "Resize right sidebar" })).toHaveCount(0);
+  }
+  const general = settings.getByRole("tab", { name: "General", exact: true });
+  await general.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(settings.getByRole("tab", { name: "Appearance", exact: true })).toBeFocused();
+  await search.fill("Professor Mari Permissions Mode");
+  await settings.getByRole("button", { name: /Professor Mari Permissions Mode Select/ }).click();
+  const permissions = settings.locator("#settings-control-mari-permissions-mode select");
+  await expect(permissions).toBeFocused();
+  await expect(permissions).toBeEnabled();
+  await expect(permissions.locator("option")).toHaveCount(5);
+  await page.getByRole("button", { name: "Close panel", exact: true }).click();
+  await expect(draft).toHaveValue("Review Mira's dialogue without changing her character card.");
+  expect(await original!.evaluate((element) => element.isConnected && !element.closest("[inert]"))).toBe(true);
+});

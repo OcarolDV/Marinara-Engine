@@ -152,8 +152,8 @@ export function AssetGrid({
                   else onSelectFile(node);
                 }}
                 className={
-                  "group relative flex flex-col items-center gap-2 rounded-xl border bg-[var(--card)] p-[clamp(0.5rem,1.3vmin,0.875rem)] transition-all hover:border-[var(--foreground)]/25 hover:shadow-sm " +
-                  (isSelected ? "border-[var(--primary)]/45 ring-2 ring-[var(--primary)]/20" : "border-[var(--border)]")
+                  "group relative flex flex-col items-center gap-3 rounded-md border p-[clamp(0.5rem,1.3vmin,0.875rem)] transition-colors hover:bg-[var(--accent)] " +
+                  (isSelected ? "border-[var(--primary)] bg-[var(--accent)]" : "border-transparent")
                 }
               >
                 {/* Checkbox — files only, always visible */}
@@ -202,13 +202,11 @@ export function AssetGrid({
                   <MoreHorizontal size="0.875rem" />
                 </button>
 
-                <div className="flex aspect-square w-[clamp(3.5rem,13vmin,6.75rem)] max-w-full shrink-0 items-center justify-center overflow-hidden rounded-lg bg-[var(--accent)]">
+                <div className="flex aspect-square w-[clamp(3.5rem,13vmin,6.75rem)] max-w-full shrink-0 items-center justify-center overflow-hidden rounded-md">
                   {node.type === "folder" ? (
                     (() => {
                       const CategoryIcon = CATEGORY_ICONS[node.name] || Folder;
-                      return (
-                        <CategoryIcon className="h-[52%] min-h-8 w-[52%] min-w-8 max-h-16 max-w-16 text-[var(--foreground)]/80" />
-                      );
+                      return <CategoryIcon className="h-9 w-9 text-[var(--muted-foreground)]" />;
                     })()
                   ) : thumbnailUrl ? (
                     <img
@@ -224,7 +222,7 @@ export function AssetGrid({
                     <FileIcon ext={node.ext} className="h-8 w-8 text-[var(--foreground)]/80" />
                   )}
                 </div>
-                <span className="w-full truncate text-center text-xs text-[var(--foreground)]">{node.name}</span>
+                <span className="w-full truncate text-center text-sm text-[var(--foreground)]">{node.name}</span>
               </div>
             );
           })}

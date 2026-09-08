@@ -331,6 +331,7 @@ export function AppShell() {
   const sidebarWidth = useUIStore((s) => s.sidebarWidth);
   const setSidebarWidth = useUIStore((s) => s.setSidebarWidth);
   const rightPanelOpen = useUIStore((s) => s.rightPanelOpen);
+  const rightPanel = useUIStore((s) => s.rightPanel);
   const rightPanelWidth = useUIStore((s) => s.rightPanelWidth);
   const setRightPanelWidth = useUIStore((s) => s.setRightPanelWidth);
   const closeRightPanel = useUIStore((s) => s.closeRightPanel);
@@ -438,7 +439,9 @@ export function AppShell() {
   }, [rightPanelOpen]);
 
   const layoutSidebarOpen = sidebarOpen;
-  const layoutRightPanelOpen = rightPanelOpen;
+  // Settings uses the workspace without remounting the panel or the active chat/Mari session.
+  const settingsWorkspaceOpen = !shellOverlayMode && rightPanelOpen && rightPanel === "settings";
+  const layoutRightPanelOpen = rightPanelOpen && !settingsWorkspaceOpen;
   const desktopReservedSidebarWidth = layoutSidebarOpen ? liveSidebarWidth : 0;
   const desktopReservedRightPanelWidth = layoutRightPanelOpen ? liveRightPanelWidth : 0;
   const desktopCenterWidth = Math.max(0, viewportWidth - desktopReservedSidebarWidth - desktopReservedRightPanelWidth);
@@ -1170,6 +1173,8 @@ export function AppShell() {
     trackerPanelVisible && trackerPanelWidthMeasured && trackerPanelSide === side ? (
       <motion.aside
         key={`tracker-${side}`}
+        inert={settingsWorkspaceOpen}
+        aria-hidden={settingsWorkspaceOpen || undefined}
         initial={{
           x: side === "left" ? -22 : 22,
           y: Math.max(-18, Math.min(10, ((trackerPanelToggleAnchorY ?? trackerPanelTop) - trackerPanelTop) * 0.25)),
@@ -1321,7 +1326,11 @@ export function AppShell() {
         {/* iOS safe area spacer — pushes TopBar below status bar and fills that gap with topbar bg */}
         <div className="flex-shrink-0 md:hidden h-[env(safe-area-inset-top)] bg-[var(--marinara-topbar-surface)] backdrop-blur-sm" />
         <TopBar mobileTopbarNavigation={shellOverlayMode} />
-        <div className="mari-app-background-paint relative flex flex-1 flex-col overflow-hidden">
+        <div
+          inert={settingsWorkspaceOpen}
+          aria-hidden={settingsWorkspaceOpen || undefined}
+          className="mari-app-background-paint relative flex flex-1 flex-col overflow-hidden"
+        >
           {/* Browser — kept mounted once opened so state persists across close/reopen */}
           <MountOnceWhenOpened open={botBrowserOpen} overlay>
             <BotBrowserView />
@@ -1374,9 +1383,11 @@ export function AppShell() {
           </AnimatePresence>
         </div>
         {/* Floating avatar notification bubbles (right edge) */}
-        <Suspense fallback={null}>
-          <ChatNotificationBubbles />
-        </Suspense>
+        <div inert={settingsWorkspaceOpen} aria-hidden={settingsWorkspaceOpen || undefined}>
+          <Suspense fallback={null}>
+            <ChatNotificationBubbles />
+          </Suspense>
+        </div>
       </main>
 
       <AnimatePresence initial={false} mode="wait">
@@ -1473,13 +1484,18 @@ export function AppShell() {
           aria-hidden={!rightPanelOpen}
           inert={!rightPanelOpen}
           className={cn(
-            "mari-shell-panel-slot relative flex-shrink-0 overflow-hidden",
+            "mari-shell-panel-slot flex-shrink-0 overflow-hidden",
+            settingsWorkspaceOpen ? "absolute bottom-0 right-0 top-12 z-40 !transition-none" : "relative",
             rightPanelDragWidth != null && "!transition-none",
             !rightPanelOpen && "pointer-events-none",
           )}
           style={
             {
-              width: rightPanelOpen ? liveRightPanelWidth : 0,
+              width: settingsWorkspaceOpen
+                ? `calc(100% - ${desktopReservedSidebarWidth}px)`
+                : rightPanelOpen
+                  ? liveRightPanelWidth
+                  : 0,
               "--mari-right-panel-width": `${liveRightPanelWidth}px`,
             } as CSSProperties
           }
@@ -1490,10 +1506,10 @@ export function AppShell() {
               aria-hidden={!rightPanelOpen}
               inert={!rightPanelOpen}
               className={cn(
-                "mari-right-panel mari-shell-panel-motion mari-shell-panel-edge mari-shell-panel-edge--left absolute inset-y-0 right-0 overflow-hidden bg-[var(--background)]/95",
+                "mari-right-panel mari-shell-panel-motion mari-shell-panel-edge mari-shell-panel-edge--left absolute inset-y-0 right-0 overflow-hidden bg-[var(--background)]",
                 rightPanelOpen ? "mari-shell-panel-enter-right" : "mari-shell-panel-exit-right pointer-events-none",
               )}
-              style={{ width: liveRightPanelWidth }}
+              style={{ width: settingsWorkspaceOpen ? "100%" : liveRightPanelWidth }}
             >
               <Suspense fallback={<SidePanelFallback />}>
                 <RightPanel />
@@ -1503,7 +1519,7 @@ export function AppShell() {
         </aside>
       )}
 
-      {!shellOverlayMode && rightPanelOpen && (
+      {!shellOverlayMode && layoutRightPanelOpen && (
         <div
           role="separator"
           aria-orientation="vertical"
