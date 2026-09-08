@@ -4,6 +4,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Simplified workspace copy with plain labels such as Workspace, Recent chats, and Resources.
+
 - Added a writers’ room workspace with labeled navigation, direct access to Professor Mari and Assets, and secondary tools for providers, presets, personas, and agents. Conversation and roleplay remain available; game mode, table games, combat, RPG controls, and schedules are hidden through a client presentation policy. Existing data, backend systems, and Mari’s editing tools remain intact.
 
 - Documented Capability API 1.14 tracker surfaces, prompt placement and agent lifecycle hooks, plus API 1.15 embedding-configuration refresh for package authors (#5900).
