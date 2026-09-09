@@ -4,6 +4,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Fixed `MarinaraLauncher.exe` silently closing when opened directly on Windows. It now starts the adjacent `start.bat`; existing shortcuts keep their launch arguments.
+
 - Updated the README introduction with the VN fork's purpose, current UI changes, preserved Mari capabilities, a current Workspace screenshot, and the distinction from upstream releases.
 
 - Added Marinara's logo and Mari greeting artwork to a compact Workspace welcome area, with a short description, a warmer background, and a clear conversation action. Existing navigation and chat creation flows remain in place.

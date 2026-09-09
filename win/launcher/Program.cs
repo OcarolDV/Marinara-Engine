@@ -88,6 +88,12 @@ internal static class Program
             return StampLnk(args[1], args[2]);
         }
 
+        if (args.Length == 0)
+        {
+            return RunBat("Pasta-Devs.MarinaraEngine",
+                Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "start.bat"), "Marinara Engine");
+        }
+
         if (args.Length < 2) return 2;
         return RunBat(args[0], args[1], args.Length >= 3 ? args[2] : Path.GetFileName(args[1]));
     }

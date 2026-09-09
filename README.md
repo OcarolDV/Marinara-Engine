@@ -24,6 +24,8 @@ This is an ongoing UI fork. Some older editor layouts, wording, and optional Ext
 
 The current fork UI is on [`main`](https://github.com/OcarolDV/Marinara-Engine/tree/main). The original [Marinara Engine repository](https://github.com/Pasta-Devs/Marinara-Engine) remains the upstream project.
 
+On Windows, open `MarinaraLauncher.exe` inside the fork's folder, or run `start.bat` directly. Keep the executable beside `start.bat`; it uses that script to install dependencies, build, and start Marinara. Node.js 24 LTS+ and Git are required. Older copies of the executable silently exit when opened without a shortcut; use `start.bat` to launch and update those copies.
+
 The setup guides and engine reference below are retained from upstream. Their older screenshots, game features, and roadmap describe the full original application. **The linked upstream releases and installers do not include this fork's UI changes.**
 
 ---
