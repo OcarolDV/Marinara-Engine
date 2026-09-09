@@ -750,6 +750,7 @@ function openAIImageSize(request: ImageGenRequest): string {
   if (isOpenAIGptImage2Model(model)) {
     return openAIGptImage2Size(width, height);
   }
+  if (model && !isOpenAIGptImageModel(model)) return requested;
 
   // GPT Image models reject small custom dimensions such as 1024x576.
   // Use the closest supported canvas and let callers crop/resize if needed.
@@ -1105,6 +1106,52 @@ function openAITextPrompt(request: ImageGenRequest): string {
   return `${prompt}\n\nDo not include: ${negativePrompt}.`;
 }
 
+async function fetchImageWithSizeFallback(
+  url: string,
+  apiKey: string,
+  requestBody: string,
+  request: ImageGenRequest,
+): Promise<Response> {
+  const init = {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    body: requestBody,
+    signal: imageRequestSignal(request),
+  };
+  const policy = { allowLocal: request.allowLocalUrls };
+  const response = await imageFetch(url, init, policy);
+  if (response.status !== 400) return response;
+
+  const error = (await response
+    .clone()
+    .json()
+    .catch(() => null)) as { message?: unknown; error?: { message?: unknown } } | null;
+  const message = error?.message ?? error?.error?.message;
+  // ponytail: only explicit FLUX.2 validation bounds are understood here. Extend this
+  // when another provider needs it; advertised NanoGPT limits can exceed its backend's.
+  if (typeof message !== "string" || !/validation errors? for Flux2/i.test(message)) return response;
+  const body = JSON.parse(requestBody) as Record<string, unknown>;
+  const size = typeof body.size === "string" ? /^(\d+)x(\d+)$/.exec(body.size) : null;
+  if (!size) return response;
+  const width = Number(size[1]);
+  const height = Number(size[2]);
+  let scale = 1;
+  for (const match of message.matchAll(
+    /\b(width|height)\s*\n\s*Input should be less than or equal to (\d+) \[type=less_than_equal/g,
+  )) {
+    scale = Math.min(scale, Number(match[2]) / (match[1] === "width" ? width : height));
+  }
+  if (!Number.isFinite(scale) || scale <= 0 || scale >= 1) return response;
+  // FLUX.2 accepts multiples of 16 with a minimum dimension of 64. Keep the shape.
+  const nextWidth = Math.floor((width * scale) / 16) * 16;
+  const nextHeight = Math.floor((height * scale) / 16) * 16;
+  if (nextWidth < 64 || nextHeight < 64) return response;
+  const nextSize = `${nextWidth}x${nextHeight}`;
+  logger.warn("[image-gen] Retrying rejected FLUX.2 size %s as %s", body.size, nextSize);
+  // One retry after a validation rejection, on the same endpoint and deadline.
+  return imageFetch(url, { ...init, body: JSON.stringify({ ...body, size: nextSize }) }, policy);
+}
+
 async function generateOpenAI(baseUrl: string, apiKey: string, request: ImageGenRequest): Promise<ImageGenResult> {
   const usesGptImageApi = isOpenAIGptImageModel(request.model);
   const references = openAIReferenceImages(request);
@@ -1166,19 +1213,7 @@ async function generateOpenAI(baseUrl: string, apiKey: string, request: ImageGen
     body.response_format = "b64_json";
   }
 
-  const resp = await imageFetch(
-    url,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(body),
-      signal: imageRequestSignal(request),
-    },
-    { allowLocal: request.allowLocalUrls },
-  );
+  const resp = await fetchImageWithSizeFallback(url, apiKey, JSON.stringify(body), request);
 
   return readOpenAIImageResult(resp, request, "generation");
 }
@@ -1385,9 +1420,15 @@ async function generateAtlasCloudImage(
 
 async function generateNanoGPT(baseUrl: string, apiKey: string, request: ImageGenRequest): Promise<ImageGenResult> {
   const url = nanoGPTImagesUrl(baseUrl);
+  const width = request.width ?? 1024;
+  const height = request.height ?? 1024;
+  const model = request.model?.trim().toLowerCase() ?? "";
+  const isNanoBanana = model.includes("nano-banana");
   const size = isOpenAIGptImageModel(request.model)
     ? openAIImageSize(request)
-    : `${request.width ?? 1024}x${request.height ?? 1024}`;
+    : isNanoBanana && height > width
+      ? "768x1344"
+      : `${width}x${height}`;
   const body: Record<string, unknown> = {
     prompt: request.prompt,
     n: 1,
@@ -1403,19 +1444,7 @@ async function generateNanoGPT(baseUrl: string, apiKey: string, request: ImageGe
   }
   const requestBody = serializeNanoGPTImageRequest(body, references);
 
-  const resp = await imageFetch(
-    url,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: requestBody,
-      signal: imageRequestSignal(request),
-    },
-    { allowLocal: request.allowLocalUrls },
-  );
+  const resp = await fetchImageWithSizeFallback(url, apiKey, requestBody, request);
 
   if (!resp.ok) {
     const errText = await resp.text().catch(() => "Unknown error");
@@ -2608,6 +2637,27 @@ function openRouterAspectRatio(width?: number, height?: number): string | null {
   )[0];
 }
 
+function isOpenRouterNanoBananaModel(model: string): boolean {
+  const lower = model.trim().toLowerCase();
+  return lower.includes("nano-banana") || /^google\/gemini-(?:2\.5-flash-image|3(?:\.1)?-.*-image)/u.test(lower);
+}
+
+function isOpenRouterGptImageModel(model: string): boolean {
+  return model.trim().toLowerCase().startsWith("openai/gpt-image-");
+}
+
+function openRouterImageAspectRatio(model: string | undefined, width?: number, height?: number): string | null {
+  const normalizedModel = model?.trim() ?? "";
+  if (isOpenRouterNanoBananaModel(normalizedModel) && (width ?? 1024) < (height ?? 1024)) return "9:16";
+  if (isOpenRouterGptImageModel(normalizedModel)) {
+    const resolvedWidth = width ?? 1024;
+    const resolvedHeight = height ?? 1024;
+    const ratio = resolvedWidth / Math.max(1, resolvedHeight);
+    return ratio >= 1.2 ? "3:2" : ratio <= 0.8 ? "2:3" : "1:1";
+  }
+  return openRouterAspectRatio(width, height);
+}
+
 export function openRouterModalities(model?: string): string[] {
   const lower = model?.trim().toLowerCase() ?? "";
   if (
@@ -2623,8 +2673,14 @@ export function openRouterModalities(model?: string): string[] {
 }
 
 export function usesOpenRouterImagesApi(model?: string): boolean {
-  const lower = model?.trim().toLowerCase() ?? "";
-  return lower.startsWith("krea/") || lower.startsWith("bytedance-seed/seedream-");
+  const lower = normalizeOpenRouterImagesApiModel(model)?.toLowerCase() ?? "";
+  return (
+    lower.startsWith("krea/") ||
+    lower.startsWith("bytedance-seed/seedream-") ||
+    lower.startsWith("openai/gpt-image-") ||
+    lower === "qwen/qwen-image-3" ||
+    lower === "meta/muse-image"
+  );
 }
 
 export function openRouterImagesUrl(baseUrl: string): string {
@@ -2646,24 +2702,43 @@ export function openRouterImagesUrl(baseUrl: string): string {
   }
 }
 
+function normalizeOpenRouterImagesApiModel(model?: string): string | undefined {
+  const trimmed = model?.trim();
+  if (!trimmed) return undefined;
+  return /^gpt-image-/i.test(trimmed) ? `openai/${trimmed.toLowerCase()}` : trimmed;
+}
+
 export function buildOpenRouterImagesRequest(request: ImageGenRequest): Record<string, unknown> {
   const prompt = request.negativePrompt
     ? `${request.prompt}\n\nAvoid in the image: ${request.negativePrompt}`
     : request.prompt;
+  const model = normalizeOpenRouterImagesApiModel(request.model) ?? "krea/krea-2-medium";
+  const isGptImage = isOpenRouterGptImageModel(model);
   const body: Record<string, unknown> = {
-    model: request.model || "krea/krea-2-medium",
+    model,
     prompt,
-    resolution: "1K",
+    ...(isGptImage ? {} : { resolution: "1K" }),
   };
-  const aspectRatio = openRouterAspectRatio(request.width, request.height);
+  if (isGptImage) {
+    if (request.quality) body.quality = request.quality;
+    if (request.transparentBackground) body.background = "transparent";
+  }
+  const aspectRatio = openRouterImageAspectRatio(model, request.width, request.height);
   if (aspectRatio) body.aspect_ratio = aspectRatio;
 
   const references = request.referenceImages ?? (request.referenceImage ? [request.referenceImage] : []);
   if (references.length > 0) {
-    body.input_references = references.slice(0, 1).map((reference) => ({
-      type: "image_url",
-      image_url: { url: imageDataUrlFromReference(reference) },
-    }));
+    const maxReferences = isGptImage ? 16 : 1;
+    const maxReferenceBytes = 64 * 1024 * 1024;
+    let referenceBytes = 0;
+    body.input_references = references.slice(0, maxReferences).flatMap((reference) => {
+      const trimmed = reference.trim();
+      const base64 = trimmed.startsWith("data:") ? trimmed.slice(trimmed.indexOf(",") + 1) : trimmed;
+      const decodedBytes = Buffer.byteLength(base64.replace(/\s+/g, ""), "base64");
+      if (referenceBytes + decodedBytes > maxReferenceBytes) return [];
+      referenceBytes += decodedBytes;
+      return [{ type: "image_url", image_url: { url: imageDataUrlFromReference(reference) } }];
+    });
   }
   return body;
 }
@@ -2725,13 +2800,14 @@ async function generateOpenRouter(baseUrl: string, apiKey: string, request: Imag
     return generateOpenRouterImageApi(baseUrl, apiKey, request);
   }
 
+  const model = request.model?.trim() || "google/gemini-2.5-flash-image";
   const body: Record<string, unknown> = {
-    model: request.model || "google/gemini-2.5-flash-image",
+    model,
     messages: [{ role: "user", content: buildChatImageMessageContent(request) }],
-    modalities: openRouterModalities(request.model),
+    modalities: openRouterModalities(model),
     stream: false,
   };
-  const aspectRatio = openRouterAspectRatio(request.width, request.height);
+  const aspectRatio = openRouterImageAspectRatio(model, request.width, request.height);
   if (aspectRatio) body.image_config = { aspect_ratio: aspectRatio };
 
   const resp = await imageFetch(
@@ -2750,6 +2826,14 @@ async function generateOpenRouter(baseUrl: string, apiKey: string, request: Imag
 
   if (!resp.ok) {
     const errText = await resp.text().catch(() => "Unknown error");
+    // Only retry an explicit endpoint rejection, never a generation/auth/rate-limit failure.
+    if (
+      (resp.status === 400 || resp.status === 404) &&
+      /image generation model.*cannot be used with.*chat\/completions/is.test(errText) &&
+      errText.includes("/api/v1/images")
+    ) {
+      return generateOpenRouterImageApi(baseUrl, apiKey, request);
+    }
     throw new Error(`OpenRouter image generation failed (${resp.status}): ${sanitizeErrorText(errText)}`);
   }
 

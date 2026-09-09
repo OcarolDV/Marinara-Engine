@@ -1,3 +1,4 @@
+import { isVisibleChatMode } from "../../lib/ui-visibility";
 import type { ChatMode } from "@marinara-engine/shared";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { Modal } from "../ui/Modal";
@@ -39,8 +40,8 @@ export function ChatModeSelectorModal({ open, onClose, onSelectMode, isPending =
 
   return (
     <Modal open={open} onClose={onClose} title={localizeUi("home.newChat.chooseMode")} width="max-w-2xl">
-      <div data-component="ChatModeSelectorModal" className="grid gap-2 sm:grid-cols-3">
-        {CHAT_MODE_OPTIONS.map(({ mode, labelKey, descriptionKey }) => (
+      <div data-component="ChatModeSelectorModal" className="grid gap-2 sm:grid-cols-2">
+        {CHAT_MODE_OPTIONS.filter(({ mode }) => isVisibleChatMode(mode)).map(({ mode, labelKey, descriptionKey }) => (
           <button
             key={mode}
             type="button"

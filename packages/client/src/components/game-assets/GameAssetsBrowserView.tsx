@@ -274,9 +274,9 @@ export function GameAssetsBrowserView({
   const visibleFileNodes = useMemo(() => currentChildren.filter((n) => n.type === "file"), [currentChildren]);
 
   const breadcrumb = useMemo(() => {
-    if (!selectedPath) return ["Game Assets"];
-    return ["Game Assets", ...selectedPath.split("/")];
-  }, [selectedPath]);
+    if (!selectedPath) return [localizeUi("writersRoom.nav.assets")];
+    return [localizeUi("writersRoom.nav.assets"), ...selectedPath.split("/")];
+  }, [selectedPath, localizeUi]);
 
   const toggleExpanded = useCallback((path: string) => {
     setExpanded((prev) => {

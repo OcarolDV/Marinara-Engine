@@ -270,8 +270,11 @@ function createDocumentStore(db: DB): CapabilityDocumentStore {
 
 function createSpatialSnapshotStore(db: DB): CapabilitySpatialSnapshotStore {
   const store: CapabilitySpatialSnapshotStore = {
-    async getById(id) {
-      const rows = await db.select().from(spatialContextSnapshots).where(eq(spatialContextSnapshots.id, id)).limit(1);
+    async getById(id, chatId) {
+      const condition = chatId
+        ? and(eq(spatialContextSnapshots.chatId, chatId), eq(spatialContextSnapshots.id, id))
+        : eq(spatialContextSnapshots.id, id);
+      const rows = await db.select().from(spatialContextSnapshots).where(condition).limit(1);
       return rows[0] ? mapSnapshot(rows[0]) : null;
     },
     async getByAnchor(chatId, messageId, swipeIndex) {
@@ -484,6 +487,10 @@ function createPersistenceSession(db: DB): CapabilityPersistenceSession {
           extra: JSON.stringify({}),
           createdAt,
         });
+        await tx
+          .update(chats)
+          .set({ lastMessageAt: createdAt, updatedAt: createdAt })
+          .where(eq(chats.id, input.chatId));
         return mapMessage(message as typeof messages.$inferSelect);
       });
     },

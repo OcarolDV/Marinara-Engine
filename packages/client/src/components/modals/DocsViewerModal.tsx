@@ -1,3 +1,4 @@
+import { isVisibleDoc } from "../../lib/ui-visibility";
 // ──────────────────────────────────────────────
 // DocsViewerModal: Browse the guides shipped in docs/
 // ──────────────────────────────────────────────
@@ -431,6 +432,7 @@ export function DocsViewerModal({
 
   const groups: { dir: string; docs: DocSummary[] }[] = [];
   for (const entry of index?.docs ?? []) {
+    if (!isVisibleDoc(entry.path)) continue;
     const group = groups.find((g) => g.dir === entry.dir);
     if (group) group.docs.push(entry);
     else groups.push({ dir: entry.dir, docs: [entry] });
@@ -638,7 +640,7 @@ export function DocsViewerModal({
     selectDoc(target);
   };
 
-  const searchResults = search?.results ?? [];
+  const searchResults = (search?.results ?? []).filter((entry) => isVisibleDoc(entry.path));
 
   // Active docs language; "en" until the index loads. A doc whose served
   // language differs from it is an English fallback and gets an "EN" badge.

@@ -1,3 +1,4 @@
+import { UI_VISIBILITY, isVisibleCommand, isVisibleCapability, isVisibleChatMode } from "../../lib/ui-visibility";
 // ──────────────────────────────────────────────
 // Chat: Settings Drawer — per-chat configuration
 // ──────────────────────────────────────────────
@@ -44,6 +45,7 @@ import {
   FileText,
   FilePlus2,
   FolderOpen,
+  Folder,
   Upload,
   Download,
   Star,
@@ -72,6 +74,7 @@ import {
 } from "./ChatToolbarControls";
 import { PickerDropdown } from "../../features/chat-settings/PickerDropdown";
 import { ChatSettingsSection as Section } from "../../features/chat-settings/ChatSettingsSection";
+import { ActiveChatBackgroundPicker } from "../panels/settings/BackgroundPicker";
 import { AdvancedParametersSection } from "../../features/chat-settings/sections/AdvancedParametersSection";
 import { ChatNameSection } from "../../features/chat-settings/sections/ChatNameSection";
 import { CombatStyleSection } from "../../features/chat-settings/sections/CombatStyleSection";
@@ -87,6 +90,7 @@ import { SceneInstructionsSection } from "../../features/chat-settings/sections/
 import { TranslationSection } from "../../features/chat-settings/sections/TranslationSection";
 import { CapabilityElement } from "../capabilities/CapabilityElement";
 import type { AvatarCrop } from "@marinara-engine/shared";
+import { resolveScopedRegexMode } from "@marinara-engine/shared";
 import { cn, getAvatarCropStyle } from "../../lib/utils";
 import { showAlertDialog, showConfirmDialog, showPromptDialog } from "../../lib/app-dialogs";
 import { HelpTooltip } from "../ui/HelpTooltip";
@@ -118,6 +122,7 @@ import { SummariesEditorModal } from "./SummariesEditorModal";
 import { AgentSuiteModal } from "./AgentSuiteModal";
 import { ConversationTimeZoneSelect } from "./ConversationTimeZoneSelect";
 import { RoleplayMessagePreview } from "./ChatMessage";
+import { resolveChatContextBudget } from "../../lib/professor-mari-context-budget";
 import { CHAT_SETTINGS_SURFACES } from "./chat-settings-surfaces";
 import { useCharacters, usePersonas, useCharacterGroups, type SpriteInfo } from "../../hooks/use-characters";
 import { lorebookKeys, useLorebooks, useEntriesAcrossLorebooks } from "../../hooks/use-lorebooks";
@@ -143,6 +148,7 @@ import {
   useChatNotes,
   useDeleteChatNote,
   useClearChatNotes,
+  useGenerationStatus,
   chatKeys,
 } from "../../hooks/use-chats";
 import { useUpdateGameWidgets } from "../../hooks/use-game";
@@ -168,6 +174,7 @@ import {
   stepCadenceValue,
 } from "../../lib/agent-cadence";
 import { characterMatchesSearch, getCharacterTitle, parseCharacterDisplayData } from "../../lib/character-display";
+import { buildCharacterIdentityGroups } from "../../lib/character-identity-groups";
 import { buildRoleplayAgentSettingsOrder, hasStandaloneRoleplayAgentSettings } from "../../lib/agent-settings-order";
 import { extractCreatorNotesCss } from "../../lib/creator-notes-css";
 import { isLorebookScopeActiveForChat } from "../../lib/lorebook-scope";
@@ -606,6 +613,7 @@ const CHAT_SETTINGS_ORDER = {
   connectedNotes: -690,
   lorebooks: -600,
   agents: -500,
+  background: -490,
   widgets: -450,
   impersonate: -400,
   memoryRecall: -300,
@@ -757,9 +765,9 @@ function isMemoryRecallExportEnvelope(value: unknown): value is ExportEnvelope<C
   return isRecord(data) && Array.isArray(data.chunks);
 }
 
-function normalizePositiveInteger(value: unknown, fallback: number, max: number): number {
+function normalizePositiveInteger(value: unknown, fallback: number, max: number, min = 1): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
-  return Math.max(1, Math.min(max, Math.trunc(value)));
+  return Math.max(min, Math.min(max, Math.trunc(value)));
 }
 
 function normalizeAgentMaxTokens(value: unknown): number {
@@ -881,6 +889,7 @@ export function ChatSettingsDrawer({
   const callsSettingsMenuId = getAgentSettingsMenuId(chat.id, "conversation-calls");
   const callsSettingsOpen = useUIStore((s) => s.chatSettingsExpandedSections[callsSettingsMenuId] ?? false);
   const setChatSettingsSectionExpanded = useUIStore((s) => s.setChatSettingsSectionExpanded);
+  const showContextUsage = useUIStore((s) => s.showContextUsage);
 
   const { data: allCharacters } = useCharacters({ includeBuiltIn: true });
   const { data: characterGroups } = useCharacterGroups();
@@ -906,13 +915,10 @@ export function ChatSettingsDrawer({
   const isConversation = chatMode === "conversation";
   const isGame = chatMode === "game";
   const isRoleplayMode = chatMode === "roleplay";
-  const { data: generationStatus, refetch: refetchGenerationStatus } = useQuery({
-    queryKey: ["generation-status", chat.id],
-    queryFn: () => api.get<{ active: boolean }>(`/generate/status/${encodeURIComponent(chat.id)}`),
-    enabled: open && isRoleplayMode,
-    staleTime: 0,
-    refetchInterval: (query) => (query.state.data?.active ? 1_000 : false),
-  });
+  const { data: generationStatus, refetch: refetchGenerationStatus } = useGenerationStatus(
+    chat.id,
+    open && isRoleplayMode,
+  );
   const activeGeneration = hasLocalGeneration || generationStatus?.active === true;
   const handleStopActiveGeneration = useCallback(async () => {
     setStoppingGeneration(true);
@@ -1009,6 +1015,7 @@ export function ChatSettingsDrawer({
   );
   const sidecarModelDownloaded = useSidecarStore((state) => state.modelDownloaded);
   const sidecarModelDisplayName = useSidecarStore((state) => state.modelDisplayName);
+  const sidecarMaxContext = useSidecarStore((state) => state.config.contextSize);
   const chatGenerationConnectionsList = useMemo(
     () =>
       appendLocalSidecarConnectionOption(
@@ -1017,6 +1024,19 @@ export function ChatSettingsDrawer({
         sidecarModelDisplayName,
       ),
     [isGame, sidecarModelDisplayName, sidecarModelDownloaded, textConnectionsList],
+  );
+  const gameContextMessagesQuery = useChatMessagePeek(chat.id, 20, open && isGame && showContextUsage);
+  const gameContextBudget = useMemo(
+    () =>
+      isGame && showContextUsage
+        ? resolveChatContextBudget(
+            gameContextMessagesQuery.data ?? [],
+            chat.connectionId,
+            connections ?? [],
+            sidecarMaxContext,
+          )
+        : null,
+    [chat.connectionId, connections, gameContextMessagesQuery.data, isGame, showContextUsage, sidecarMaxContext],
   );
   const conversationSummaryConnectionId =
     typeof metadata.summaryConnectionId === "string" ? metadata.summaryConnectionId : "";
@@ -1042,6 +1062,7 @@ export function ChatSettingsDrawer({
   const { data: customToolCapabilities } = useCustomToolCapabilities();
   const { data: allChats } = useChats({ refetchOnMount: false });
   const personas = useMemo(() => allPersonas ?? [], [allPersonas]);
+  const showCharacterIdentities = useUIStore((state) => state.showCharactersInPersonaPickers);
 
   const chatCharIds: string[] = useMemo(
     () => getChatCharacterIds({ characterIds: chat.characterIds }),
@@ -1090,12 +1111,12 @@ export function ChatSettingsDrawer({
       return typeof notes === "string" && extractCreatorNotesCss(notes).css.trim().length > 0;
     });
   }, [allCharacters, chatCharIds]);
-  // Scoped regex: the per-chat display mode (default "disabled"), and whether any
-  // script is character-scoped — the control only appears when at least one is.
-  const scopedRegexMode: "disabled" | "exclusive" | "chat" =
-    metadata.scopedRegexMode === "exclusive" || metadata.scopedRegexMode === "chat"
-      ? metadata.scopedRegexMode
-      : "disabled";
+  // Unset chat choices inherit the selected preset; explicit choices remain overrides.
+  const presetScopedRegexMode = resolveScopedRegexMode(
+    promptPresetOptions.find((preset) => preset.id === chat.promptPresetId)?.scopedRegexMode,
+  );
+  const inheritsScopedRegexMode = metadata.scopedRegexMode == null;
+  const scopedRegexMode = resolveScopedRegexMode(metadata.scopedRegexMode, presetScopedRegexMode);
   // Character-scoped regex scripts grouped by the chat's characters — drives the
   // per-character list + the section badge, and whether the section shows at all.
   const chatScopedRegexGroups = useMemo(() => {
@@ -1310,6 +1331,7 @@ export function ChatSettingsDrawer({
   };
   const availableConversationCommandOptions = useMemo(() => {
     return CONVERSATION_COMMAND_TOGGLE_OPTIONS.filter((command) => {
+      if (!isVisibleCommand(command.id)) return false;
       const agentId = CONVERSATION_COMMAND_AGENT_IDS[command.id];
       return !agentId || installedAgentIds.has(agentId);
     });
@@ -1583,7 +1605,11 @@ export function ChatSettingsDrawer({
   const activeTrackerAgents = useMemo(
     () =>
       availableAgents.filter(
-        (agent) => agent.category === "tracker" && activeAgentIds.includes(agent.id) && !agent.runtimeDisabled,
+        (agent) =>
+          isVisibleCapability(agent) &&
+          agent.category === "tracker" &&
+          activeAgentIds.includes(agent.id) &&
+          !agent.runtimeDisabled,
       ),
     [activeAgentIds, availableAgents],
   );
@@ -2127,7 +2153,12 @@ export function ChatSettingsDrawer({
     () =>
       metadata.enableAgents === true && isRoleplayMode
         ? availableAgents.filter((agent) => {
-            if (!activeAgentIds.includes(agent.id) || !hasStandaloneRoleplayAgentSettings(agent.id)) return false;
+            if (
+              !isVisibleCapability(agent) ||
+              !activeAgentIds.includes(agent.id) ||
+              !hasStandaloneRoleplayAgentSettings(agent.id)
+            )
+              return false;
             if (agent.id === "hierarchical-maps") return Boolean(mapsPackage);
             if (agent.id === "long-term-memory") return Boolean(ltmPackage);
             if (agent.id === STORYBOARD_AGENT_ID || agent.id === "beholder") return true;
@@ -2338,6 +2369,15 @@ export function ChatSettingsDrawer({
     () => characters.filter((character) => character.id !== PROFESSOR_MARI_ID),
     [characters],
   );
+  const characterIdentityGroups = useMemo(
+    () =>
+      buildCharacterIdentityGroups(
+        selectableCharacters,
+        (characterGroups ?? []) as CharacterGroup[],
+        localizeUi("ui.chat.personapicker.ungrouped"),
+      ),
+    [characterGroups, localizeUi, selectableCharacters],
+  );
 
   const chatCharacters = useMemo(
     () =>
@@ -2351,13 +2391,23 @@ export function ChatSettingsDrawer({
     () => (chat.personaId ? (personas.find((persona) => persona.id === chat.personaId) ?? null) : null),
     [chat.personaId, personas],
   );
+  const activeIdentityCharacter = useMemo(
+    () =>
+      chat.personaCharacterId
+        ? (characters.find((character) => character.id === chat.personaCharacterId) ?? null)
+        : null,
+    [chat.personaCharacterId, characters],
+  );
 
   const chatSpriteSubjects = useMemo(
     () => [
       ...chatCharacters.map((character) => ({ kind: "character" as const, id: character.id, character })),
+      ...(activeIdentityCharacter && !chatCharacters.some((character) => character.id === activeIdentityCharacter.id)
+        ? [{ kind: "character" as const, id: activeIdentityCharacter.id, character: activeIdentityCharacter }]
+        : []),
       ...(activePersona ? [{ kind: "persona" as const, id: activePersona.id, persona: activePersona }] : []),
     ],
-    [activePersona, chatCharacters],
+    [activeIdentityCharacter, activePersona, chatCharacters],
   );
 
   const chatSpriteQueries = useQueries({
@@ -2374,7 +2424,9 @@ export function ChatSettingsDrawer({
     return Array.isArray(sprites) && sprites.length > 0;
   });
   const chatSpriteSubjectsLoading =
-    (chatCharIds.length > 0 && allCharacters == null) || (!!chat.personaId && allPersonas == null);
+    (chatCharIds.length > 0 && allCharacters == null) ||
+    (!!chat.personaId && allPersonas == null) ||
+    (!!chat.personaCharacterId && allCharacters == null);
   const chatSpriteChoicesLoading =
     chatSpriteSubjects.length > 0 &&
     chatSpriteSubjectsWithSprites.length === 0 &&
@@ -2398,7 +2450,7 @@ export function ChatSettingsDrawer({
   }, [charInfoMap]);
 
   const getCharacterInfo = useCallback(
-    (c: { id?: string; data: string; comment?: string | null }) => {
+    (c: { id?: string; data: string | Record<string, unknown>; comment?: string | null }) => {
       if (c.id && charInfoMap.has(c.id)) return charInfoMap.get(c.id)!;
       return parseCharacterDisplayData(c);
     },
@@ -2406,12 +2458,13 @@ export function ChatSettingsDrawer({
   );
 
   const charName = useCallback(
-    (c: { id?: string; data: string; comment?: string | null }) => getCharacterInfo(c).name,
+    (c: { id?: string; data: string | Record<string, unknown>; comment?: string | null }) => getCharacterInfo(c).name,
     [getCharacterInfo],
   );
 
   const charTitle = useCallback(
-    (c: { id?: string; data: string; comment?: string | null }) => getCharacterTitle(getCharacterInfo(c)),
+    (c: { id?: string; data: string | Record<string, unknown>; comment?: string | null }) =>
+      getCharacterTitle(getCharacterInfo(c)),
     [getCharacterInfo],
   );
 
@@ -3416,6 +3469,8 @@ export function ChatSettingsDrawer({
   const [showLbPicker, setShowLbPicker] = useState(false);
   const [showToolPicker, setShowToolPicker] = useState(false);
   const [showPersonaPicker, setShowPersonaPicker] = useState(false);
+  const [showCharacterIdentityGroups, setShowCharacterIdentityGroups] = useState(false);
+  const [expandedCharacterIdentityGroups, setExpandedCharacterIdentityGroups] = useState<Set<string>>(new Set());
   const [showConnectionPicker, setShowConnectionPicker] = useState(false);
   const [showSummariesModal, setShowSummariesModal] = useState(false);
   const [showAgentSuiteModal, setShowAgentSuiteModal] = useState(false);
@@ -3709,7 +3764,12 @@ export function ChatSettingsDrawer({
         contextSize: normalizePositiveInteger(mergedSettings.contextSize, DEFAULT_AGENT_CONTEXT_SIZE, 200),
         maxTokens: normalizeAgentMaxTokens(mergedSettings.maxTokens),
         runInterval: intervalMeta
-          ? normalizePositiveInteger(mergedSettings.runInterval, intervalMeta.defaultValue, intervalMeta.max)
+          ? normalizePositiveInteger(
+              mergedSettings.runInterval,
+              intervalMeta.defaultValue,
+              intervalMeta.max,
+              intervalMeta.min,
+            )
           : null,
         setup: buildInitialAgentAddSetupState({
           agentId: agent.id,
@@ -4398,7 +4458,9 @@ export function ChatSettingsDrawer({
                         ? "cursor-not-allowed opacity-40"
                         : "hover:bg-[var(--primary)]/15 hover:text-[var(--primary)]",
                     )}
-                    title={localizeUi("ui.chat.chatsettingsdrawer.reRunValue1OnTheLastMessage", { value1: agent.name })}
+                    title={localizeUi("ui.chat.chatsettingsdrawer.reRunValue1OnTheLastMessage", {
+                      value1: agent.name,
+                    })}
                   >
                     <RefreshCw size="0.6875rem" className={cn(agentProcessing && "animate-spin")} />
                   </button>
@@ -4638,7 +4700,7 @@ export function ChatSettingsDrawer({
       ? {
           bottom: "auto",
           left: "auto",
-          maxHeight: `min(42rem, calc(100dvh - ${anchor.top}px - 0.75rem - env(safe-area-inset-bottom)))`,
+          maxHeight: `min(42rem, calc(100dvh - ${anchor.top}px - 0.75rem - var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom))))`,
           right: `${anchor.right}px`,
           top: `${anchor.top}px`,
           width: `min(34rem, calc(100vw - ${anchor.right}px - 0.75rem))`,
@@ -4659,7 +4721,7 @@ export function ChatSettingsDrawer({
           NEUTRAL_PANEL_SHELL,
           "mari-chat-settings-popover",
           "mari-chat-settings-drawer",
-          "fixed bottom-3 z-[70] flex min-h-0 w-[min(34rem,calc(100vw-var(--mari-chat-ui-inset-left,0px)-var(--mari-chat-ui-inset-right,0px)-1.5rem))] flex-col overflow-hidden max-md:inset-x-2 max-md:bottom-[calc(0.75rem+env(safe-area-inset-bottom))] max-md:top-[calc(3.5rem+env(safe-area-inset-top))] max-md:w-auto",
+          "fixed bottom-3 z-[70] flex min-h-0 w-[min(34rem,calc(100vw-var(--mari-chat-ui-inset-left,0px)-var(--mari-chat-ui-inset-right,0px)-1.5rem))] flex-col overflow-hidden max-md:inset-x-2 max-md:bottom-[calc(0.75rem+var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom)))] max-md:top-[calc(3.5rem+env(safe-area-inset-top))] max-md:w-auto",
           anchor ? "" : "right-[calc(var(--mari-chat-ui-inset-right,0px)+0.75rem)] top-14",
         )}
         style={panelStyle}
@@ -4689,7 +4751,7 @@ export function ChatSettingsDrawer({
         <div
           className={cn(
             NEUTRAL_PANEL_SCROLL_AREA,
-            "flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain pb-[calc(1rem+env(safe-area-inset-bottom))]",
+            "flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain pb-[calc(1rem+var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom)))]",
           )}
         >
           {/* Settings profile bar — hidden in Game Mode. Scene chats keep it, but scene instructions stay chat-owned. */}
@@ -4880,6 +4942,7 @@ export function ChatSettingsDrawer({
             <ConnectionSection
               connectionId={chat.connectionId ?? null}
               connections={chatGenerationConnectionsList}
+              contextBudget={gameContextBudget}
               isGame={isGame}
               onConnectionChange={setConnection}
             />
@@ -5264,11 +5327,38 @@ export function ChatSettingsDrawer({
               help={localizeUi("ui.chat.chatsettingsdrawer.yourPersonaDefinesWhoYouAreInThisChat")}
             >
               {/* Currently selected persona */}
-              {chat.personaId ? (
+              {chat.personaId || chat.personaCharacterId ? (
                 <>
                   <div className="flex items-center gap-2.5 rounded-lg bg-[var(--primary)]/10 px-2.5 py-2">
                     {(() => {
+                      const character = chat.personaCharacterId
+                        ? characters.find((candidate) => candidate.id === chat.personaCharacterId)
+                        : null;
                       const p = personas.find((p) => p.id === chat.personaId);
+                      if (character) {
+                        return (
+                          <>
+                            <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[var(--accent)] text-xs font-semibold">
+                              {character.avatarPath ? (
+                                <img
+                                  src={character.avatarPath}
+                                  alt=""
+                                  className="h-full w-full object-cover"
+                                  style={getAvatarCropStyle(getCharacterInfo(character).avatarCrop)}
+                                />
+                              ) : (
+                                charName(character)[0]
+                              )}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <span className="block truncate text-xs">{charName(character)}</span>
+                              <span className="block text-[0.625rem] text-[var(--muted-foreground)]">
+                                {localizeUi("ui.chat.personapicker.characterSource")}
+                              </span>
+                            </div>
+                          </>
+                        );
+                      }
                       return p ? (
                         <>
                           <DrawerPersonaAvatar persona={p} size="md" />
@@ -5290,7 +5380,11 @@ export function ChatSettingsDrawer({
                     <div className="ml-auto flex shrink-0 items-center gap-1">
                       <button
                         type="button"
-                        onClick={() => toggleInlineResourceEditor("persona", chat.personaId!)}
+                        onClick={() =>
+                          chat.personaCharacterId
+                            ? toggleInlineResourceEditor("character", chat.personaCharacterId)
+                            : toggleInlineResourceEditor("persona", chat.personaId!)
+                        }
                         className="flex h-5 w-5 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
                         title={t("chat.settings.actions.editPersonaCard")}
                         aria-label={t("chat.settings.actions.editPersonaCard")}
@@ -5299,7 +5393,7 @@ export function ChatSettingsDrawer({
                       </button>
                       <button
                         type="button"
-                        onClick={() => updateChat.mutate({ id: chat.id, personaId: null })}
+                        onClick={() => updateChat.mutate({ id: chat.id, personaId: null, personaCharacterId: null })}
                         className={CHAT_RESOURCE_REMOVE_BUTTON_CLASS}
                         data-chat-settings-remove-resource="persona"
                         title={localizeUi("ui.chat.chatsettingsdrawer.removePersona")}
@@ -5308,11 +5402,17 @@ export function ChatSettingsDrawer({
                       </button>
                     </div>
                   </div>
-                  {renderInlineCardEditor(
-                    "persona",
-                    chat.personaId,
-                    personas.find((persona) => persona.id === chat.personaId)?.name ?? "Unknown persona",
-                  )}
+                  {chat.personaCharacterId
+                    ? renderInlineCardEditor(
+                        "character",
+                        chat.personaCharacterId,
+                        charNameMap.get(chat.personaCharacterId) ?? "Unknown character",
+                      )
+                    : renderInlineCardEditor(
+                        "persona",
+                        chat.personaId!,
+                        personas.find((persona) => persona.id === chat.personaId)?.name ?? "Unknown persona",
+                      )}
                 </>
               ) : (
                 <p className="text-[0.6875rem] text-[var(--muted-foreground)]">
@@ -5330,7 +5430,7 @@ export function ChatSettingsDrawer({
                   className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-[var(--border)] px-3 py-2 text-xs text-[var(--muted-foreground)] transition-colors hover:border-[var(--primary)]/40 hover:text-[var(--primary)]"
                 >
                   <Plus size="0.75rem" />{" "}
-                  {chat.personaId
+                  {chat.personaId || chat.personaCharacterId
                     ? localizeUi("ui.chat.chatsettingsdrawer.change")
                     : localizeUi("ui.chat.chatsettingsdrawer.choose")}{" "}
                   {localizeUi("ui.characters.cardlibrarydetailcard.persona")}
@@ -5345,19 +5445,21 @@ export function ChatSettingsDrawer({
                   {/* None option */}
                   <button
                     onClick={() => {
-                      updateChat.mutate({ id: chat.id, personaId: null });
+                      updateChat.mutate({ id: chat.id, personaId: null, personaCharacterId: null });
                       setShowPersonaPicker(false);
                     }}
                     className={cn(
                       "flex items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-all hover:bg-[var(--accent)]",
-                      !chat.personaId && "bg-[var(--primary)]/10",
+                      !chat.personaId && !chat.personaCharacterId && "bg-[var(--primary)]/10",
                     )}
                   >
                     <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-[var(--muted-foreground)]">
                       <X size="0.625rem" />
                     </div>
                     <span className="flex-1 truncate text-xs">{localizeUi("ui.game.gamesurfacecomponent.none")}</span>
-                    {!chat.personaId && <Check size="0.625rem" className="ml-auto shrink-0 text-[var(--primary)]" />}
+                    {!chat.personaId && !chat.personaCharacterId && (
+                      <Check size="0.625rem" className="ml-auto shrink-0 text-[var(--primary)]" />
+                    )}
                   </button>
                   {personas
                     .filter(
@@ -5369,7 +5471,7 @@ export function ChatSettingsDrawer({
                       <button
                         key={p.id}
                         onClick={() => {
-                          updateChat.mutate({ id: chat.id, personaId: p.id });
+                          updateChat.mutate({ id: chat.id, personaId: p.id, personaCharacterId: null });
                           setShowPersonaPicker(false);
                         }}
                         className={cn(
@@ -5391,17 +5493,127 @@ export function ChatSettingsDrawer({
                         )}
                       </button>
                     ))}
+                  {(showCharacterIdentities || !!chat.personaCharacterId) && (
+                    <button
+                      type="button"
+                      onClick={() => setShowCharacterIdentityGroups((value) => !value)}
+                      aria-expanded={showCharacterIdentityGroups}
+                      className="flex w-full items-center gap-2 border-t border-[var(--border)] px-3 py-2 text-left text-[0.625rem] font-semibold uppercase text-[var(--muted-foreground)] hover:bg-[var(--accent)]"
+                    >
+                      {showCharacterIdentityGroups ? <FolderOpen size="0.75rem" /> : <Folder size="0.75rem" />}
+                      <span className="flex-1">{localizeUi("ui.chat.personapicker.playAsCharacter")}</span>
+                      {showCharacterIdentityGroups ? <ChevronDown size="0.75rem" /> : <ChevronRight size="0.75rem" />}
+                    </button>
+                  )}
+                  {(showCharacterIdentities || !!chat.personaCharacterId) &&
+                    showCharacterIdentityGroups &&
+                    characterIdentityGroups.map((group) => {
+                      const expanded = expandedCharacterIdentityGroups.has(group.id);
+                      const visibleMembers = group.members.filter(
+                        (character) =>
+                          character.id === chat.personaCharacterId ||
+                          (showCharacterIdentities &&
+                            characterMatchesSearch(getCharacterInfo(character), personaSearch)),
+                      );
+                      if (visibleMembers.length === 0) return null;
+                      return (
+                        <div key={group.id}>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedCharacterIdentityGroups((current) => {
+                                const next = new Set(current);
+                                if (next.has(group.id)) next.delete(group.id);
+                                else next.add(group.id);
+                                return next;
+                              })
+                            }
+                            aria-expanded={expanded}
+                            className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs hover:bg-[var(--accent)]"
+                          >
+                            {group.avatarPath ? (
+                              <img
+                                src={group.avatarPath}
+                                alt=""
+                                loading="lazy"
+                                className="h-4 w-4 shrink-0 rounded object-cover"
+                              />
+                            ) : expanded ? (
+                              <FolderOpen size="0.75rem" />
+                            ) : (
+                              <Folder size="0.75rem" />
+                            )}
+                            <span className="min-w-0 flex-1 truncate">{group.name}</span>
+                            <span className="text-[0.625rem] text-[var(--muted-foreground)]">
+                              {visibleMembers.length}
+                            </span>
+                            {expanded ? <ChevronDown size="0.75rem" /> : <ChevronRight size="0.75rem" />}
+                          </button>
+                          {expanded &&
+                            visibleMembers.map((character) => (
+                              <button
+                                key={`persona-character-${character.id}`}
+                                onClick={() => {
+                                  updateChat.mutate({
+                                    id: chat.id,
+                                    personaId: null,
+                                    personaCharacterId: character.id,
+                                  });
+                                  setShowPersonaPicker(false);
+                                }}
+                                className={cn(
+                                  "flex items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-all hover:bg-[var(--accent)]",
+                                  chat.personaCharacterId === character.id && "bg-[var(--primary)]/10",
+                                )}
+                              >
+                                <div className="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[var(--accent)] text-[0.625rem] font-semibold">
+                                  {character.avatarPath ? (
+                                    <img
+                                      src={character.avatarPath}
+                                      alt=""
+                                      className="h-full w-full object-cover"
+                                      style={getAvatarCropStyle(getCharacterInfo(character).avatarCrop)}
+                                    />
+                                  ) : (
+                                    charName(character)[0]
+                                  )}
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <span className="block truncate text-xs">{charName(character)}</span>
+                                  <span className="block text-[0.625rem] text-[var(--muted-foreground)]">
+                                    {localizeUi("ui.chat.personapicker.characterSource")}
+                                  </span>
+                                </div>
+                                {chat.personaCharacterId === character.id && (
+                                  <Check size="0.625rem" className="ml-auto shrink-0 text-[var(--primary)]" />
+                                )}
+                              </button>
+                            ))}
+                        </div>
+                      );
+                    })}
                   {personas.filter(
                     (p) =>
                       includesTextForMatch(p.name, personaSearch) ||
                       includesTextForMatch(p.comment ?? "", personaSearch),
-                  ).length === 0 && (
-                    <p className="px-3 py-2 text-[0.6875rem] text-[var(--muted-foreground)]">
-                      {personas.length === 0
-                        ? localizeUi("ui.chat.chatsettingsdrawer.noPersonasCreatedYet")
-                        : localizeUi("ui.lorebooks.linkedresourcepicker.noMatches")}
-                    </p>
-                  )}
+                  ).length === 0 &&
+                    !(
+                      (showCharacterIdentities || !!chat.personaCharacterId) &&
+                      characterIdentityGroups.some((group) =>
+                        group.members.some(
+                          (character) =>
+                            character.id === chat.personaCharacterId ||
+                            (showCharacterIdentities &&
+                              characterMatchesSearch(getCharacterInfo(character), personaSearch)),
+                        ),
+                      )
+                    ) && (
+                      <p className="px-3 py-2 text-[0.6875rem] text-[var(--muted-foreground)]">
+                        {personas.length === 0
+                          ? localizeUi("ui.chat.chatsettingsdrawer.noPersonasCreatedYet")
+                          : localizeUi("ui.lorebooks.linkedresourcepicker.noMatches")}
+                      </p>
+                    )}
                 </PickerDropdown>
               )}
             </Section>
@@ -5760,9 +5972,25 @@ export function ChatSettingsDrawer({
               )}
             >
               <div className="space-y-2">
+                <SettingsSwitch
+                  label={localizeUi("chat.settings.regex.usePreset")}
+                  checked={inheritsScopedRegexMode}
+                  onChange={(inherit) =>
+                    updateMeta.mutate({ id: chat.id, scopedRegexMode: inherit ? null : scopedRegexMode })
+                  }
+                  description={localizeUi("chat.settings.regex.presetDefault", {
+                    mode:
+                      presetScopedRegexMode === "disabled"
+                        ? localizeUi("ui.agents.agenteditor.disabled")
+                        : presetScopedRegexMode === "exclusive"
+                          ? localizeUi("ui.chat.chatsettingsdrawer.exclusive")
+                          : localizeUi("ui.chat.chatsettingsdrawer.chat"),
+                  })}
+                />
                 <div className="flex rounded-lg ring-1 ring-[var(--border)]">
                   <button
                     onClick={() => updateMeta.mutate({ id: chat.id, scopedRegexMode: "disabled" })}
+                    aria-pressed={scopedRegexMode === "disabled"}
                     className={cn(
                       "flex-1 px-3 py-2 text-[0.6875rem] font-medium transition-colors rounded-l-lg",
                       scopedRegexMode === "disabled"
@@ -5774,6 +6002,7 @@ export function ChatSettingsDrawer({
                   </button>
                   <button
                     onClick={() => updateMeta.mutate({ id: chat.id, scopedRegexMode: "exclusive" })}
+                    aria-pressed={scopedRegexMode === "exclusive"}
                     className={cn(
                       "flex-1 px-3 py-2 text-[0.6875rem] font-medium transition-colors",
                       scopedRegexMode === "exclusive"
@@ -5785,6 +6014,7 @@ export function ChatSettingsDrawer({
                   </button>
                   <button
                     onClick={() => updateMeta.mutate({ id: chat.id, scopedRegexMode: "chat" })}
+                    aria-pressed={scopedRegexMode === "chat"}
                     className={cn(
                       "flex-1 px-3 py-2 text-[0.6875rem] font-medium transition-colors rounded-r-lg",
                       scopedRegexMode === "chat"
@@ -6167,122 +6397,132 @@ export function ChatSettingsDrawer({
                   />
                 )}
 
-                {/* Conversation schedules toggle */}
-                <SettingsSwitch
-                  label={localizeUi("ui.chat.chatsettingsdrawer.schedules")}
-                  description={localizeUi(
-                    "ui.chat.chatsettingsdrawer.optionalCharacterRoutinesForAvailabilityAndDelays",
-                  )}
-                  checked={conversationSchedulesEnabled}
-                  onChange={(nextEnabled) => {
-                    if (nextEnabled && !hasGeneratedConversationSchedules) {
-                      if (chatCharIds.length === 0) {
-                        updateMeta.mutate({ id: chat.id, conversationSchedulesEnabled: nextEnabled });
-                        return;
-                      }
-                      void generateConversationSchedules(false);
-                      return;
-                    }
-                    updateMeta.mutate({ id: chat.id, conversationSchedulesEnabled: nextEnabled });
-                  }}
-                  labelPosition="start"
-                  className={cn(
-                    "justify-between rounded-md px-3 py-2.5 text-left",
-                    conversationSchedulesEnabled
-                      ? "bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/30"
-                      : "bg-[var(--secondary)] hover:bg-[var(--accent)]",
-                  )}
-                  labelClassName="text-xs font-medium"
-                />
-
-                <div ref={scheduleControlsRef} className="scroll-mt-2 space-y-2">
-                  {/* Schedule status */}
-                  <div className="flex items-center gap-2 rounded-lg bg-[var(--secondary)] px-3 py-2.5">
-                    <div className="flex-1 min-w-0">
-                      <span className="text-[0.6875rem] leading-snug text-[var(--muted-foreground)]">
-                        {!conversationSchedulesEnabled
-                          ? localizeUi(
-                              "ui.chat.chatsettingsdrawer.schedulesAreOffAutonomyUsesTalkativenessAndYourStatus",
-                            )
-                          : hasGeneratedConversationSchedules
-                            ? localizeUi(
-                                "ui.chat.chatsettingsdrawer.schedulesGeneratedStatusIsDerivedFromCharacterRoutines",
-                              )
-                            : localizeUi("ui.chat.chatsettingsdrawer.schedulesEnabledGenerateRoutinesWhenYouReReady")}
-                      </span>
-                      <p className="text-[0.59375rem] mt-0.5 text-[var(--muted-foreground)]/60">
-                        {conversationSchedulesEnabled
-                          ? localizeUi("ui.chat.chatsettingsdrawer.schedulesRefreshOnlyAfterYouEnableOrRegenerateThem")
-                          : localizeUi("ui.chat.chatsettingsdrawer.turnSchedulesOnIfYouWantAvailabilityAndBusy")}
-                      </p>
-                    </div>
-                    <button
-                      onClick={async () => {
-                        await generateConversationSchedules(true);
-                      }}
-                      disabled={isRegeneratingSchedules || chatCharIds.length === 0}
-                      className={cn(
-                        "flex items-center gap-1 rounded-md px-2 py-1 text-[0.625rem] font-medium transition-colors",
-                        isRegeneratingSchedules || chatCharIds.length === 0
-                          ? "cursor-not-allowed text-[var(--muted-foreground)]/60"
-                          : "text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
+                {UI_VISIBILITY.schedules && (
+                  <>
+                    {/* Conversation schedules toggle */}
+                    <SettingsSwitch
+                      label={localizeUi("ui.chat.chatsettingsdrawer.schedules")}
+                      description={localizeUi(
+                        "ui.chat.chatsettingsdrawer.optionalCharacterRoutinesForAvailabilityAndDelays",
                       )}
-                      title={
-                        isRegeneratingSchedules
-                          ? localizeUi("ui.chat.chatsettingsdrawer.regeneratingSchedules")
-                          : localizeUi("ui.chat.chatsettingsdrawer.generateSchedules")
-                      }
-                    >
-                      <RefreshCw size="0.6875rem" className={cn(isRegeneratingSchedules && "animate-spin")} />
-                      {isRegeneratingSchedules
-                        ? localizeUi("ui.chat.chatsettingsdrawer.regenerating")
-                        : hasGeneratedConversationSchedules
-                          ? localizeUi("ui.agents.secretplotpanel.regenerate")
-                          : localizeUi("ui.characters.characterclipcard.generate")}
-                    </button>
-                  </div>
+                      checked={conversationSchedulesEnabled}
+                      onChange={(nextEnabled) => {
+                        if (nextEnabled && !hasGeneratedConversationSchedules) {
+                          if (chatCharIds.length === 0) {
+                            updateMeta.mutate({ id: chat.id, conversationSchedulesEnabled: nextEnabled });
+                            return;
+                          }
+                          void generateConversationSchedules(false);
+                          return;
+                        }
+                        updateMeta.mutate({ id: chat.id, conversationSchedulesEnabled: nextEnabled });
+                      }}
+                      labelPosition="start"
+                      className={cn(
+                        "justify-between rounded-md px-3 py-2.5 text-left",
+                        conversationSchedulesEnabled
+                          ? "bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/30"
+                          : "bg-[var(--secondary)] hover:bg-[var(--accent)]",
+                      )}
+                      labelClassName="text-xs font-medium"
+                    />
 
-                  <div className="rounded-lg bg-[var(--secondary)]/55 px-3 py-2.5 ring-1 ring-[var(--border)]/80">
-                    <ConversationTimeZoneSelect compact />
-                  </div>
+                    <div ref={scheduleControlsRef} className="scroll-mt-2 space-y-2">
+                      {/* Schedule status */}
+                      <div className="flex items-center gap-2 rounded-lg bg-[var(--secondary)] px-3 py-2.5">
+                        <div className="flex-1 min-w-0">
+                          <span className="text-[0.6875rem] leading-snug text-[var(--muted-foreground)]">
+                            {!conversationSchedulesEnabled
+                              ? localizeUi(
+                                  "ui.chat.chatsettingsdrawer.schedulesAreOffAutonomyUsesTalkativenessAndYourStatus",
+                                )
+                              : hasGeneratedConversationSchedules
+                                ? localizeUi(
+                                    "ui.chat.chatsettingsdrawer.schedulesGeneratedStatusIsDerivedFromCharacterRoutines",
+                                  )
+                                : localizeUi(
+                                    "ui.chat.chatsettingsdrawer.schedulesEnabledGenerateRoutinesWhenYouReReady",
+                                  )}
+                          </span>
+                          <p className="text-[0.59375rem] mt-0.5 text-[var(--muted-foreground)]/60">
+                            {conversationSchedulesEnabled
+                              ? localizeUi(
+                                  "ui.chat.chatsettingsdrawer.schedulesRefreshOnlyAfterYouEnableOrRegenerateThem",
+                                )
+                              : localizeUi("ui.chat.chatsettingsdrawer.turnSchedulesOnIfYouWantAvailabilityAndBusy")}
+                          </p>
+                        </div>
+                        <button
+                          onClick={async () => {
+                            await generateConversationSchedules(true);
+                          }}
+                          disabled={isRegeneratingSchedules || chatCharIds.length === 0}
+                          className={cn(
+                            "flex items-center gap-1 rounded-md px-2 py-1 text-[0.625rem] font-medium transition-colors",
+                            isRegeneratingSchedules || chatCharIds.length === 0
+                              ? "cursor-not-allowed text-[var(--muted-foreground)]/60"
+                              : "text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
+                          )}
+                          title={
+                            isRegeneratingSchedules
+                              ? localizeUi("ui.chat.chatsettingsdrawer.regeneratingSchedules")
+                              : localizeUi("ui.chat.chatsettingsdrawer.generateSchedules")
+                          }
+                        >
+                          <RefreshCw size="0.6875rem" className={cn(isRegeneratingSchedules && "animate-spin")} />
+                          {isRegeneratingSchedules
+                            ? localizeUi("ui.chat.chatsettingsdrawer.regenerating")
+                            : hasGeneratedConversationSchedules
+                              ? localizeUi("ui.agents.secretplotpanel.regenerate")
+                              : localizeUi("ui.characters.characterclipcard.generate")}
+                        </button>
+                      </div>
 
-                  {hasGeneratedConversationSchedules && onOpenScheduleEditor && (
-                    <div className="mt-2 space-y-1.5">
-                      <span className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">
-                        {localizeUi("ui.chat.chatsettingsdrawer.editSchedules")}
-                      </span>
-                      {chatCharIds.map((charId) => {
-                        const schedule = (metadata.characterSchedules as Record<string, WeekSchedule> | undefined)?.[
-                          charId
-                        ];
-                        const scheduledDayCount = schedule?.days
-                          ? Object.values(schedule.days).filter((blocks) => Array.isArray(blocks) && blocks.length > 0)
-                              .length
-                          : 0;
-                        return (
-                          <button
-                            key={charId}
-                            type="button"
-                            onClick={() => onOpenScheduleEditor(charId)}
-                            className="flex w-full items-center justify-between gap-3 rounded-lg bg-[var(--secondary)] px-3 py-2.5 text-left transition-colors hover:bg-[var(--accent)]/50"
-                          >
-                            <span className="min-w-0 flex-1 truncate text-xs font-medium">
-                              {charNameMap.get(charId) ?? "Unknown"}
-                            </span>
-                            <span className="shrink-0 text-[0.625rem] text-[var(--muted-foreground)]">
-                              {schedule
-                                ? localizeUi("ui.chat.chatsettingsdrawer.value1DayValue2Scheduled", {
-                                    value1: scheduledDayCount,
-                                    value2: scheduledDayCount === 1 ? "" : localizeUi("ui.noodle.stageprofileview.s"),
-                                  })
-                                : localizeUi("ui.chat.chatsettingsdrawer.createSchedule")}
-                            </span>
-                          </button>
-                        );
-                      })}
+                      <div className="rounded-lg bg-[var(--secondary)]/55 px-3 py-2.5 ring-1 ring-[var(--border)]/80">
+                        <ConversationTimeZoneSelect compact />
+                      </div>
+
+                      {hasGeneratedConversationSchedules && onOpenScheduleEditor && (
+                        <div className="mt-2 space-y-1.5">
+                          <span className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">
+                            {localizeUi("ui.chat.chatsettingsdrawer.editSchedules")}
+                          </span>
+                          {chatCharIds.map((charId) => {
+                            const schedule = (
+                              metadata.characterSchedules as Record<string, WeekSchedule> | undefined
+                            )?.[charId];
+                            const scheduledDayCount = schedule?.days
+                              ? Object.values(schedule.days).filter(
+                                  (blocks) => Array.isArray(blocks) && blocks.length > 0,
+                                ).length
+                              : 0;
+                            return (
+                              <button
+                                key={charId}
+                                type="button"
+                                onClick={() => onOpenScheduleEditor(charId)}
+                                className="flex w-full items-center justify-between gap-3 rounded-lg bg-[var(--secondary)] px-3 py-2.5 text-left transition-colors hover:bg-[var(--accent)]/50"
+                              >
+                                <span className="min-w-0 flex-1 truncate text-xs font-medium">
+                                  {charNameMap.get(charId) ?? "Unknown"}
+                                </span>
+                                <span className="shrink-0 text-[0.625rem] text-[var(--muted-foreground)]">
+                                  {schedule
+                                    ? localizeUi("ui.chat.chatsettingsdrawer.value1DayValue2Scheduled", {
+                                        value1: scheduledDayCount,
+                                        value2:
+                                          scheduledDayCount === 1 ? "" : localizeUi("ui.noodle.stageprofileview.s"),
+                                      })
+                                    : localizeUi("ui.chat.chatsettingsdrawer.createSchedule")}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
+                  </>
+                )}
               </div>
             </Section>
           )}
@@ -6573,45 +6813,51 @@ export function ChatSettingsDrawer({
                       </AgentSettingsCard>
                     ) : null}
 
-                    {/* Schedule generation preferences — free-form authorial guidance */}
-                    <label className="flex flex-col gap-1.5">
-                      <span className="inline-flex items-center gap-1.5 text-xs font-medium">
-                        {localizeUi("ui.chat.chatsettingsdrawer.scheduleGenerationPreferences")}
-                        <HelpTooltip
-                          text={localizeUi(
-                            "ui.chat.chatsettingsdrawer.freeFormGuidanceThatSteersHowCharacterSchedulesAre",
-                          )}
-                        />
-                      </span>
-                      <textarea
-                        value={scheduleGenerationPreferences}
-                        onChange={(e) => setScheduleGenerationPreferences(e.target.value)}
-                        placeholder={localizeUi("ui.chat.chatsettingsdrawer.eGMakeEveryoneGoToSleepBeforeMidnight")}
-                        className="min-h-[5rem] resize-y rounded-lg border border-[var(--border)] bg-[var(--secondary)] p-2.5 text-[0.6875rem] text-[var(--foreground)] outline-none transition-colors focus:border-[var(--primary)]/50 placeholder:text-[var(--muted-foreground)]/40"
-                      />
-                      <p className="text-[0.59375rem] text-[var(--muted-foreground)]/70">
-                        {localizeUi("ui.chat.chatsettingsdrawer.globalSettingAppliesToEveryConversationChatSNext")}
-                      </p>
-                    </label>
-
-                    {/* Active schedule-generation preference indicator */}
-                    {scheduleGenerationPreferences.trim() && (
-                      <div
-                        className="rounded-lg border border-[var(--primary)]/30 bg-[var(--primary)]/10 px-3 py-2.5"
-                        title={scheduleGenerationPreferences.trim()}
-                      >
-                        <div className="min-w-0 flex-1">
-                          <span className="block text-[0.6875rem] font-medium leading-snug text-[var(--foreground)]">
-                            {localizeUi("ui.chat.chatsettingsdrawer.scheduleGenerationPreferenceActive")}
+                    {UI_VISIBILITY.schedules && (
+                      <>
+                        {/* Schedule generation preferences — free-form authorial guidance */}
+                        <label className="flex flex-col gap-1.5">
+                          <span className="inline-flex items-center gap-1.5 text-xs font-medium">
+                            {localizeUi("ui.chat.chatsettingsdrawer.scheduleGenerationPreferences")}
+                            <HelpTooltip
+                              text={localizeUi(
+                                "ui.chat.chatsettingsdrawer.freeFormGuidanceThatSteersHowCharacterSchedulesAre",
+                              )}
+                            />
                           </span>
-                          <p className="mt-0.5 truncate text-[0.625rem] italic text-[var(--muted-foreground)]">
-                            "{scheduleGenerationPreferences.trim()}"
+                          <textarea
+                            value={scheduleGenerationPreferences}
+                            onChange={(e) => setScheduleGenerationPreferences(e.target.value)}
+                            placeholder={localizeUi("ui.chat.chatsettingsdrawer.eGMakeEveryoneGoToSleepBeforeMidnight")}
+                            className="min-h-[5rem] resize-y rounded-lg border border-[var(--border)] bg-[var(--secondary)] p-2.5 text-[0.6875rem] text-[var(--foreground)] outline-none transition-colors focus:border-[var(--primary)]/50 placeholder:text-[var(--muted-foreground)]/40"
+                          />
+                          <p className="text-[0.59375rem] text-[var(--muted-foreground)]/70">
+                            {localizeUi("ui.chat.chatsettingsdrawer.globalSettingAppliesToEveryConversationChatSNext")}
                           </p>
-                          <p className="mt-1 text-[0.59375rem] text-[var(--muted-foreground)]/70">
-                            {localizeUi("ui.chat.chatsettingsdrawer.willBeAppliedTheNextTimeSchedulesAreRegenerated")}
-                          </p>
-                        </div>
-                      </div>
+                        </label>
+
+                        {/* Active schedule-generation preference indicator */}
+                        {scheduleGenerationPreferences.trim() && (
+                          <div
+                            className="rounded-lg border border-[var(--primary)]/30 bg-[var(--primary)]/10 px-3 py-2.5"
+                            title={scheduleGenerationPreferences.trim()}
+                          >
+                            <div className="min-w-0 flex-1">
+                              <span className="block text-[0.6875rem] font-medium leading-snug text-[var(--foreground)]">
+                                {localizeUi("ui.chat.chatsettingsdrawer.scheduleGenerationPreferenceActive")}
+                              </span>
+                              <p className="mt-0.5 truncate text-[0.625rem] italic text-[var(--muted-foreground)]">
+                                "{scheduleGenerationPreferences.trim()}"
+                              </p>
+                              <p className="mt-1 text-[0.59375rem] text-[var(--muted-foreground)]/70">
+                                {localizeUi(
+                                  "ui.chat.chatsettingsdrawer.willBeAppliedTheNextTimeSchedulesAreRegenerated",
+                                )}
+                              </p>
+                            </div>
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
                 )}
@@ -6705,7 +6951,8 @@ export function ChatSettingsDrawer({
                       .filter(
                         (c) =>
                           c.id !== chat.id &&
-                          (c.mode === "roleplay" || c.mode === "game") &&
+                          isVisibleChatMode(c.mode) &&
+                          c.mode !== "conversation" &&
                           !c.connectedChatId &&
                           includesTextForMatch(getConnectedChatDisplayName(c), connectionSearch),
                       )
@@ -8703,7 +8950,9 @@ export function ChatSettingsDrawer({
                               },
                             ] as const
                           ).map((cat) => {
-                            const catAgents = availableAgents.filter((a) => a.category === cat.key);
+                            const catAgents = availableAgents.filter(
+                              (a) => isVisibleCapability(a) && a.category === cat.key,
+                            );
                             const activeInCat = catAgents
                               .filter(
                                 (agent) =>
@@ -8833,6 +9082,18 @@ export function ChatSettingsDrawer({
                   {isGame && renderCustomAgentPicker({ showWhenEmpty: true })}
                 </div>
               )}
+            </Section>
+          )}
+
+          {(isRoleplayMode || isGame) && (
+            <Section
+              id={`${chatMode}-background`}
+              style={{ order: CHAT_SETTINGS_ORDER.background }}
+              label={localizeUi("chat.settings.background")}
+              icon={<Image size="0.875rem" />}
+              help={localizeUi("chat.settings.backgroundHelp")}
+            >
+              <ActiveChatBackgroundPicker game={isGame} />
             </Section>
           )}
 
@@ -9141,6 +9402,9 @@ export function ChatSettingsDrawer({
               onExcludePastReasoningChange={(excludePastReasoning) =>
                 updateMeta.mutate({ id: chat.id, excludePastReasoning })
               }
+              onPastReasoningLimitChange={(pastReasoningLimit) =>
+                updateMeta.mutate({ id: chat.id, pastReasoningLimit })
+              }
               onImageCaptioningChange={(patch) => updateMeta.mutate({ id: chat.id, ...patch })}
             />
           </div>
@@ -9319,7 +9583,7 @@ export function ChatSettingsDrawer({
                   {agentAddPreview.agent.builtIn ? (
                     <input
                       type="number"
-                      min={1}
+                      min={agentAddIntervalMeta.min ?? 1}
                       max={agentAddIntervalMeta.max}
                       value={agentAddPreview.runInterval}
                       onChange={(e) => {
@@ -9331,6 +9595,7 @@ export function ChatSettingsDrawer({
                                   e.target.value,
                                   agentAddIntervalMeta.defaultValue,
                                   agentAddIntervalMeta.max,
+                                  agentAddIntervalMeta.min,
                                 ),
                               }
                             : current,
@@ -9366,6 +9631,7 @@ export function ChatSettingsDrawer({
                                     current.runInterval ?? 1,
                                     delta,
                                     agentAddIntervalMeta.max,
+                                    agentAddIntervalMeta.min,
                                   ),
                                 }
                               : current,
@@ -9380,6 +9646,7 @@ export function ChatSettingsDrawer({
                                     e.target.value,
                                     current.runInterval ?? 1,
                                     agentAddIntervalMeta.max,
+                                    agentAddIntervalMeta.min,
                                   ),
                                 }
                               : current,
@@ -9402,6 +9669,7 @@ export function ChatSettingsDrawer({
                                       current.runInterval ?? 1,
                                       1,
                                       agentAddIntervalMeta.max,
+                                      agentAddIntervalMeta.min,
                                     ),
                                   }
                                 : current,
@@ -9424,6 +9692,7 @@ export function ChatSettingsDrawer({
                                       current.runInterval ?? 1,
                                       -1,
                                       agentAddIntervalMeta.max,
+                                      agentAddIntervalMeta.min,
                                     ),
                                   }
                                 : current,
@@ -9438,6 +9707,11 @@ export function ChatSettingsDrawer({
                   )}
                   <span className="text-[0.6875rem] text-[var(--muted-foreground)]">{agentAddIntervalMeta.unit}</span>
                 </div>
+                {agentAddPreview.agent.id === "illustrator" && (
+                  <p className="text-[0.625rem] text-[var(--muted-foreground)]">
+                    {localizeUi("agents.illustrator.manualOnlyIntervalHelp")}
+                  </p>
+                )}
                 <p className="text-[0.625rem] text-[var(--muted-foreground)]">{agentAddIntervalMeta.help}</p>
               </div>
             )}

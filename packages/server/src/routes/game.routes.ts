@@ -10,6 +10,7 @@ import { eq } from "../db/file-query.js";
 import { IMPORTED_GAME_ENGINE_ANCHOR_PREFIX } from "../db/file-backed-store.js";
 import { chats as chatsTable } from "../db/schema/index.js";
 import { logger, logDebugOverride } from "../lib/logger.js";
+import { isLocalInferenceBaseUrl } from "../middleware/ip-allowlist.js";
 import { readImageDimensionsFromFile } from "../utils/image-metadata.js";
 import { createChatsStorage, METADATA_WRITE_ORDINALS_KEY } from "../services/storage/chats.storage.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
@@ -107,6 +108,7 @@ import { processReputationActions } from "../services/game/reputation.service.js
 import {
   addNameLookupEntry,
   findCharAvatarFuzzy,
+  loadCharacterLibraryAvatarLookup,
   nameLookupWithoutLeadingPrefix,
   normalizeAvatarLookupName,
   npcAvatarSlug,
@@ -290,6 +292,7 @@ import { createAppSettingsStorage } from "../services/storage/app-settings.stora
 import { applyStoryboardAgentSettings } from "../services/game/storyboard-agent-settings.js";
 import {
   STORYBOARD_FALLBACK_BEAT_MAX_CHARS,
+  completeStoryboardPlan,
   compactStoryboardFallbackBeat,
   compactStoryboardTextAtWordBoundary,
   createStoryboardReviewPlanEnvelope,
@@ -1817,6 +1820,8 @@ const gameSetupConfigSchema = z.object({
   spotifyArtist: z.string().nullable().optional(),
   enableLorebookKeeper: z.boolean().optional(),
   language: z.string().min(1).max(100).optional(),
+  autoTranslate: z.boolean().optional(),
+  translationOutputTargetLang: z.string().trim().min(1).max(100).optional(),
   generationParameters: generationParametersSchema.partial().optional(),
   promptPresetId: z.string().nullable().optional(),
   gameSystemPrompt: z.string().max(50_000).nullable().optional(),
@@ -4962,15 +4967,32 @@ function storyboardStaleRenderCutoff(): string {
   return new Date(Date.now() - GAME_STORYBOARD_STALE_RENDER_MS).toISOString();
 }
 
+/**
+ * Process-start timestamp: any storyboard still "in progress" from BEFORE
+ * this moment belongs to a previous (crashed) process and is dead no matter
+ * how recently it was updated. Folding it into the per-request sweep replaces
+ * the old startup-wide sweep, which the lazy store (#5592 Phase 2) can no
+ * longer run without loading every chat's storyboards — each chat is now
+ * recovered on its first storyboard read instead, before anything is listed.
+ */
+const storyboardBootRecoveryCutoff = new Date().toISOString();
+
+function storyboardRecoveryCutoff(): string {
+  const stale = storyboardStaleRenderCutoff();
+  return stale > storyboardBootRecoveryCutoff ? stale : storyboardBootRecoveryCutoff;
+}
+
 async function recoverStaleGameStoryboards(
   storyboards: ReturnType<typeof createGameStoryboardsStorage>,
   cutoffUpdatedAt: string,
   context: string,
+  chatId?: string,
 ) {
   try {
     const recovered = await storyboards.failInProgressUpdatedBefore(
       cutoffUpdatedAt,
       GAME_STORYBOARD_STALE_RENDER_ERROR,
+      chatId,
     );
     if (recovered > 0) {
       logger.warn("[game/storyboard] marked %d stale storyboard render job(s) failed during %s", recovered, context);
@@ -5597,7 +5619,7 @@ function sanitizeStoryboardPlan(
   return {
     title: compactStoryboardText(root.title, 160) || fallback.title,
     summary: compactStoryboardText(root.summary, 2000) || fallback.summary,
-    keyframes: frames.slice(0, 6),
+    keyframes: frames,
   };
 }
 
@@ -5835,7 +5857,7 @@ async function serializeGameTurnStoryboard(args: {
     let image: GameTurnStoryboardKeyframe["image"] = null;
     let video: GeneratedSceneVideo | null = null;
     if (frame.chatImageId) {
-      const imageRow = await args.gallery.getById(frame.chatImageId).catch(() => null);
+      const imageRow = await args.gallery.getById(frame.chatImageId, args.row.chatId).catch(() => null);
       if (imageRow) {
         image = {
           id: imageRow.id,
@@ -5848,7 +5870,7 @@ async function serializeGameTurnStoryboard(args: {
       }
     }
     if (frame.sceneVideoId) {
-      const videoRow = await args.sceneVideos.getById(frame.sceneVideoId).catch(() => null);
+      const videoRow = await args.sceneVideos.getById(frame.sceneVideoId, args.row.chatId).catch(() => null);
       if (videoRow) video = serializeGameSceneVideo(videoRow);
     }
 
@@ -5906,9 +5928,24 @@ async function serializeGameTurnStoryboard(args: {
 }
 
 export async function gameRoutes(app: FastifyInstance) {
-  await recoverStaleGameStoryboards(createGameStoryboardsStorage(app.db), new Date().toISOString(), "startup");
+  // Startup-wide storyboard recovery is gone (#5592 Phase 2): the per-request
+  // sweeps below use storyboardRecoveryCutoff(), whose boot-time floor marks
+  // every pre-boot in-progress row failed the first time its chat is read.
   const characterGallery = createCharacterGalleryStorage(app.db);
   const personaGallery = createPersonaGalleryStorage(app.db);
+
+  const loadGameAvatarLookup = async (meta: Record<string, unknown>, chatCharacterIds: string[]) => {
+    const ids = getStoryboardLibraryCharacterIds(
+      meta,
+      (meta.gameSetupConfig as Record<string, unknown>) ?? null,
+      chatCharacterIds,
+    );
+    const characters = createCharactersStorage(app.db);
+    return loadCharacterLibraryAvatarLookup(
+      async () => (await Promise.all(ids.map((id) => characters.getById(id)))).filter((row) => row != null),
+      (error) => logger.warn(error, "[game] Failed to load active character portraits"),
+    );
+  };
 
   const buildHydratedGameMeta = async (
     chatId: string,
@@ -5982,6 +6019,7 @@ export async function gameRoutes(app: FastifyInstance) {
 
   const applyGameSetupPayload = async (args: {
     chatId: string;
+    chatCharacterIds: string[];
     meta: Record<string, unknown>;
     setupData: Record<string, unknown>;
     rpgContext: SetupRpgContext;
@@ -6064,19 +6102,7 @@ export async function gameRoutes(app: FastifyInstance) {
       Object.assign(updates, buildInitialGameMapPatch(updates, setupConfig, generatedStartingMap));
     }
     if (setupData.startingNpcs) {
-      const charStore = createCharactersStorage(app.db);
-      const allChars = await charStore.list();
-      const charAvatarByName = new Map<string, string>();
-      for (const ch of allChars) {
-        try {
-          const parsed = JSON.parse(ch.data) as { name?: string };
-          if (parsed.name && ch.avatarPath) {
-            addNameLookupEntry(charAvatarByName, parsed.name, ch.avatarPath);
-          }
-        } catch {
-          /* skip unparseable */
-        }
-      }
+      const charAvatarByName = await loadGameAvatarLookup(meta, args.chatCharacterIds);
 
       const usedNpcNames = new Set<string>();
       const uniqueNpcName = (rawName: string, fallbackName: string) => {
@@ -6458,6 +6484,10 @@ export async function gameRoutes(app: FastifyInstance) {
       gameId,
       gameSessionNumber: 1,
       gameSessionStatus: "setup",
+      ...(setupConfig.autoTranslate !== undefined ? { autoTranslate: setupConfig.autoTranslate } : {}),
+      ...(setupConfig.translationOutputTargetLang
+        ? { translationOutputTargetLang: setupConfig.translationOutputTargetLang }
+        : {}),
       gameCurrentSessionStartedAt: new Date().toISOString(),
       gameActiveState: "exploration",
       gameGmMode: setupConfig.gmMode,
@@ -6887,6 +6917,7 @@ export async function gameRoutes(app: FastifyInstance) {
     try {
       setupResult = await applyGameSetupPayload({
         chatId,
+        chatCharacterIds: parseChatCharacterIds(chat.characterIds),
         meta,
         setupData,
         rpgContext: { partyRpgStats, personaRpgStats, personaName },
@@ -6950,6 +6981,7 @@ export async function gameRoutes(app: FastifyInstance) {
     try {
       setupResult = await applyGameSetupPayload({
         chatId,
+        chatCharacterIds: parseChatCharacterIds(chat.characterIds),
         meta,
         setupData,
         rpgContext: await loadSetupRpgContext(chat, setupConfig),
@@ -11628,19 +11660,7 @@ export async function gameRoutes(app: FastifyInstance) {
         try {
           const imgConn = await connections.getWithKey(imgConnId);
           if (imgConn) {
-            const charStore = createCharactersStorage(app.db);
-            const allChars = await charStore.list();
-            const charAvatarByName = new Map<string, string>();
-            for (const ch of allChars) {
-              try {
-                const parsed = JSON.parse(ch.data) as Record<string, unknown> & { name?: string };
-                if (parsed.name && ch.avatarPath) {
-                  addNameLookupEntry(charAvatarByName, parsed.name, ch.avatarPath);
-                }
-              } catch {
-                /* skip */
-              }
-            }
+            const charAvatarByName = await loadGameAvatarLookup(meta, parseChatCharacterIds(chat.characterIds));
 
             const illustration = sceneResult.illustration as SceneIllustrationRequest | null | undefined;
             if (illustration && sceneCtx.canGenerateIllustrations) {
@@ -11683,7 +11703,7 @@ export async function gameRoutes(app: FastifyInstance) {
             for (const npc of npcs) {
               if (!npc.name) continue;
               const libAvatar = findCharAvatarFuzzy(npc.name, charAvatarByName);
-              if (libAvatar && npc.avatarUrl !== libAvatar) {
+              if (libAvatar && !npc.avatarUrl) {
                 npc.avatarUrl = libAvatar;
                 libResolvedNpcs.push({
                   name: npc.name,
@@ -11845,7 +11865,7 @@ export async function gameRoutes(app: FastifyInstance) {
           content: z.string().min(1).max(6000),
         }),
       )
-      .max(200)
+      .max(GAME_STORYBOARD_KEYFRAME_COUNT_MAX)
       .optional(),
     keyframeCount: z
       .number()
@@ -11881,7 +11901,7 @@ export async function gameRoutes(app: FastifyInstance) {
     const storyboards = createGameStoryboardsStorage(app.db);
     const gallery = createGalleryStorage(app.db);
     const sceneVideos = createGameSceneVideosStorage(app.db);
-    await recoverStaleGameStoryboards(storyboards, storyboardStaleRenderCutoff(), "storyboard list");
+    await recoverStaleGameStoryboards(storyboards, storyboardRecoveryCutoff(), "storyboard list", chatId);
     const rows = query.messageId
       ? await storyboards.listForTurn(chatId, query.messageId, query.swipeIndex ?? 0)
       : await storyboards.listRecentByChatId(chatId, query.limit);
@@ -11918,7 +11938,7 @@ export async function gameRoutes(app: FastifyInstance) {
       const sceneVideos = createGameSceneVideosStorage(app.db);
       const gallery = createGalleryStorage(app.db);
       const promptOverridesStorage = createPromptOverridesStorage(app.db);
-      await recoverStaleGameStoryboards(storyboards, storyboardStaleRenderCutoff(), "storyboard generate");
+      await recoverStaleGameStoryboards(storyboards, storyboardRecoveryCutoff(), "storyboard generate", input.chatId);
 
       const chat = await chats.getById(input.chatId);
       if (!chat) return reply.status(404).send({ error: "Chat not found" });
@@ -12237,30 +12257,48 @@ export async function gameRoutes(app: FastifyInstance) {
         }
       } else {
         try {
-          const directorResult = await runGameChatComplete(
-            provider,
-            illustratorMessages.messages,
-            gameGenOptions(
-              conn.model ?? "",
-              {
-                stream: false,
-                maxTokens: structuredCharacterPrompts ? 3600 : 2200,
-                responseFormat: { type: "json_object" },
-                signal: storyboardAbortSignal,
-              },
-              parameters,
-              conn.provider,
-            ),
-            "Game storyboard illustrator",
-            GAME_STORYBOARD_ILLUSTRATOR_TIMEOUT_MS,
+          const plannerOptions = gameGenOptions(
+            conn.model ?? "",
+            {
+              stream: false,
+              maxTokens: Math.min(
+                32_000,
+                Math.max(structuredCharacterPrompts ? 3600 : 2200, storyboardKeyframeCount * 900),
+              ),
+              responseFormat: { type: "json_object" },
+              signal: storyboardAbortSignal,
+            },
+            parameters,
+            conn.provider,
           );
-          const extraction = extractLeadingThinkingBlocks(directorResult.content || "", parameters?.customThinkingTags);
-          const rawPlan = extraction.content.trim();
-          if (debugLogsEnabled) debugLog("[debug/game/storyboard-illustrator] raw response:\n%s", rawPlan);
-          const parsedPlan = parseJSON(rawPlan);
-          if (!storyboardPlanHasRenderableKeyframe(parsedPlan)) {
-            throw new Error("Storyboard Illustrator returned no usable keyframes");
-          }
+          const parsedPlan = await completeStoryboardPlan({
+            retryWithoutReasoning:
+              plannerOptions.reasoningEffort !== "none" &&
+              conn.provider === "custom" &&
+              isLocalInferenceBaseUrl(baseUrl),
+            customThinkingTags: parameters?.customThinkingTags,
+            generate: async (withoutReasoning) => {
+              if (withoutReasoning)
+                logger.warn("[game/storyboard] Retrying empty local planner output without reasoning");
+              const result = await runGameChatComplete(
+                provider,
+                illustratorMessages.messages,
+                {
+                  ...plannerOptions,
+                  ...(withoutReasoning
+                    ? {
+                        reasoningEffort: "none",
+                        enabledParameters: { ...plannerOptions.enabledParameters, reasoningEffort: true },
+                      }
+                    : {}),
+                },
+                "Game storyboard illustrator",
+                GAME_STORYBOARD_ILLUSTRATOR_TIMEOUT_MS,
+              );
+              if (debugLogsEnabled) debugLog("[debug/game/storyboard-illustrator] raw response:\n%s", result.content);
+              return result;
+            },
+          });
           plan = sanitizeStoryboardPlan(parsedPlan, storyboardPlanSanitizerOptions);
         } catch (err) {
           if (storyboardAbortSignal.aborted) {
@@ -12616,7 +12654,7 @@ export async function gameRoutes(app: FastifyInstance) {
           await storyboards.updateKeyframe(frame.id, { chatImageId: galleryImage.id, status: "image_complete" });
 
           if (videoRuntime) {
-            await storyboards.update(storyboardRow.id, { status: "rendering_videos" });
+            await storyboards.update(storyboardRow.id, { status: "rendering_videos" }, storyboardRow.chatId);
             await storyboards.updateKeyframe(frame.id, { status: "rendering_video" });
             let savedFilePath: string | null = null;
             let metadataSaved = false;
@@ -12862,7 +12900,11 @@ export async function gameRoutes(app: FastifyInstance) {
                   (videoRuntime && generatedVideos < plan.keyframes.length)
                 ? "partial"
                 : "complete";
-          const updatedStoryboard = await storyboards.update(storyboardRow.id, { status: finalStatus });
+          const updatedStoryboard = await storyboards.update(
+            storyboardRow.id,
+            { status: finalStatus },
+            storyboardRow.chatId,
+          );
           if (!updatedStoryboard) throw new Error("Storyboard metadata could not be reloaded");
           const storyboardAgentConfigId = readTrimmedString(meta.storyboardAgentConfigId);
           if (ownerMode === "roleplay" && generatedImages > 0 && storyboardAgentConfigId) {
@@ -12894,13 +12936,15 @@ export async function gameRoutes(app: FastifyInstance) {
         } catch (err) {
           const message = err instanceof Error ? err.message : "Storyboard media rendering failed";
           logger.warn(err, "[game/storyboard] background media rendering failed for storyboard %s", storyboardRow.id);
-          await storyboards.update(storyboardRow.id, { status: "failed", error: message }).catch((updateErr) => {
-            logger.warn(
-              updateErr,
-              "[game/storyboard] failed to persist background media rendering error for storyboard %s",
-              storyboardRow.id,
-            );
-          });
+          await storyboards
+            .update(storyboardRow.id, { status: "failed", error: message }, storyboardRow.chatId)
+            .catch((updateErr) => {
+              logger.warn(
+                updateErr,
+                "[game/storyboard] failed to persist background media rendering error for storyboard %s",
+                storyboardRow.id,
+              );
+            });
         } finally {
           clearTimeout(backgroundTimeout);
           releaseBackgroundStoryboardLock?.();
@@ -13004,6 +13048,8 @@ export async function gameRoutes(app: FastifyInstance) {
     let referenceImage: VideoReferenceImage;
 
     if (requestedGalleryImageId) {
+      // Deliberately unscoped: galleryImageBelongsToGameScope accepts sibling-chat images,
+      // so the owning chat is not necessarily this one (permanent-lease risk accepted, #5611).
       const galleryImage = await gallery.getById(requestedGalleryImageId);
       if (!galleryImage || !(await galleryImageBelongsToGameScope(chats, chat, galleryImage.chatId))) {
         return reply.status(404).send({ error: "Gallery illustration not found" });
@@ -13497,19 +13543,7 @@ export async function gameRoutes(app: FastifyInstance) {
         addExistingNpcAvatar(existingNpcAvatarByName, npc.name, generatedAvatarUrl);
       }
 
-      const charStore = createCharactersStorage(app.db);
-      const allChars = await charStore.list();
-      const charAvatarByName = new Map<string, string>();
-      for (const ch of allChars) {
-        try {
-          const parsed = JSON.parse(ch.data) as { name?: string };
-          if (parsed.name && ch.avatarPath) {
-            addNameLookupEntry(charAvatarByName, parsed.name, ch.avatarPath);
-          }
-        } catch {
-          /* skip */
-        }
-      }
+      const charAvatarByName = await loadGameAvatarLookup(meta, parseChatCharacterIds(chat.characterIds));
 
       type PreviewAssetItem = (typeof items)[number];
       const portraitPreviewItems: Array<PreviewAssetItem | null> = new Array(input.npcsNeedingAvatars.length).fill(
@@ -13970,20 +14004,10 @@ export async function gameRoutes(app: FastifyInstance) {
           addExistingNpcAvatar(existingNpcAvatarByName, npc.name, generatedAvatarUrl);
         }
 
-        // Check character library first — reuse existing avatars
-        const charStore = createCharactersStorage(app.db);
-        const allChars = await charStore.list();
-        const charAvatarByName = new Map<string, string>();
-        for (const ch of allChars) {
-          try {
-            const parsed = JSON.parse(ch.data) as { name?: string };
-            if (parsed.name && ch.avatarPath) {
-              addNameLookupEntry(charAvatarByName, parsed.name, ch.avatarPath);
-            }
-          } catch {
-            /* skip */
-          }
-        }
+        const charAvatarByName = await loadGameAvatarLookup(
+          latestMeta,
+          parseChatCharacterIds((latestChat ?? chat).characterIds),
+        );
 
         let nextNpcIndex = 0;
         const runPortraitWorker = async () => {
@@ -14173,8 +14197,10 @@ export async function gameRoutes(app: FastifyInstance) {
   // Delete a specific checkpoint.
   app.delete("/checkpoint/:id", async (req) => {
     const { id } = req.params as { id: string };
+    // Optional chatId keeps the lazy store from loading the whole table for a bare-id delete.
+    const { chatId } = req.query as { chatId?: string };
     const checkpoints = createCheckpointService(app.db);
-    await checkpoints.deleteById(id);
+    await checkpoints.deleteById(id, typeof chatId === "string" && chatId ? chatId : undefined);
     return { ok: true };
   });
 
@@ -14196,7 +14222,7 @@ export async function gameRoutes(app: FastifyInstance) {
     const chat = await chats.getById(input.chatId);
     if (!chat) throw new Error("Chat not found");
 
-    const cp = await checkpointSvc.getById(input.checkpointId);
+    const cp = await checkpointSvc.getById(input.checkpointId, input.chatId);
     if (!cp) throw new Error("Checkpoint not found");
     if (cp.chatId !== input.chatId) throw new Error("Checkpoint does not belong to this chat");
 
@@ -14204,14 +14230,14 @@ export async function gameRoutes(app: FastifyInstance) {
     // still be edited after capture. Older checkpoints fall back to their row IDs.
     const snapshot =
       parseJsonField<NonNullable<Awaited<ReturnType<typeof stateStore.getById>>> | null>(cp.snapshotData, null) ??
-      (await stateStore.getById(cp.snapshotId));
+      (await stateStore.getById(cp.snapshotId, input.chatId));
     if (!snapshot) throw new Error("Checkpoint snapshot was deleted and can no longer be restored");
     if (snapshot.chatId !== input.chatId) throw new Error("Checkpoint snapshot does not belong to this chat");
     const spatialSnapshot =
       parseJsonField<NonNullable<Awaited<ReturnType<typeof spatialStore.getById>>> | null>(
         cp.spatialSnapshotData,
         null,
-      ) ?? (cp.spatialSnapshotId ? await spatialStore.getById(cp.spatialSnapshotId) : null);
+      ) ?? (cp.spatialSnapshotId ? await spatialStore.getById(cp.spatialSnapshotId, input.chatId) : null);
     if (cp.spatialSnapshotId && !spatialSnapshot) {
       throw new Error("Checkpoint spatial snapshot was deleted and can no longer be restored");
     }

@@ -1,3 +1,4 @@
+import { isVisibleCapability } from "../../lib/ui-visibility";
 // ──────────────────────────────────────────────
 // Chat: Conversation Input — Discord-style
 // ──────────────────────────────────────────────
@@ -22,10 +23,12 @@ import { useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { useChatStore } from "../../stores/chat.store";
 import { useAgentStore } from "../../stores/agent.store";
 import { useUIStore } from "../../stores/ui.store";
+import { useSidecarStore } from "../../stores/sidecar.store";
 import { useConversationGamesStore } from "../../stores/conversation-games.store";
 import { useGenerate } from "../../hooks/use-generate";
 import { useApplyRegex } from "../../hooks/use-apply-regex";
 import { useCreateMessage, useDeleteMessage, useUpdateMessageExtra, useChat, chatKeys } from "../../hooks/use-chats";
+import { useConnections } from "../../hooks/use-connections";
 import { characterKeys } from "../../hooks/use-characters";
 import {
   matchSlashCommand,
@@ -44,7 +47,7 @@ import { translateDraftText } from "../../lib/draft-translation";
 import { prepareImageAttachment } from "../../lib/chat-attachment-images";
 import { isFileDrag } from "../../lib/chat-resource-drag";
 import { CARD_ASSET_INSERT_EVENT, type CardAssetInsertDetail } from "../../lib/card-asset-links";
-import { isGenerationSendBlocked } from "../../lib/generation-stream-policy";
+import { isGenerationSendBlocked, isIosWebKitBrowser } from "../../lib/generation-stream-policy";
 import { requestChatScrollToBottom } from "../../lib/chat-scroll-events";
 import { searchStandardEmojiShortcodes, type StandardEmojiShortcode } from "../../lib/emoji-shortcodes";
 import { QuickConnectionSwitcher } from "./QuickConnectionSwitcher";
@@ -57,6 +60,7 @@ import { SlashCommandFeedback } from "./SlashCommandFeedback";
 import { QuickReplyMenu, type QuickReplyAction } from "./QuickReplyMenu";
 import { getChatInputShellClass } from "./chat-input-styles";
 import { MariSuggestionChips } from "./MariSuggestionChips";
+import { resolveChatContextBudget } from "../../lib/professor-mari-context-budget";
 import {
   ConversationMediaPickerPanel,
   type ConversationMediaPickerTab,
@@ -324,7 +328,7 @@ interface ConversationInputProps {
     conversationActivity?: string;
   }>;
   onPeekPrompt?: () => void;
-  onIllustrate?: () => void | Promise<void>;
+  onIllustrate?: (prompt?: string) => void | Promise<void>;
   onGenerateSelfie?: (characterId?: string) => void | Promise<void>;
 }
 
@@ -372,9 +376,11 @@ export function ConversationInput({
   const activeChatId = useChatStore((s) => s.activeChatId);
   const mariChips = useAgentStore((s) => s.mariChips);
   const mariChipsChatId = useAgentStore((s) => s.mariChipsChatId);
-  const clearMariChips = useAgentStore((s) => s.clearMariChips);
   const professorMariSuggestionsEnabled = useUIStore((s) => s.professorMariSuggestionsEnabled);
   const { data: activeChat } = useChat(activeChatId);
+  const { data: contextConnections = [] } = useConnections();
+  const sidecarMaxContext = useSidecarStore((state) => state.config.contextSize);
+  const showContextUsage = useUIStore((s) => s.showContextUsage);
   const { data: installedCapabilities = [] } = useInstalledCapabilityPackages();
   const availableCapabilityIds = useMemo(
     () => new Set(installedCapabilities.filter((item) => item.status === "active").map((item) => item.id)),
@@ -385,6 +391,7 @@ export function ConversationInput({
       installedCapabilities.filter(
         (item) =>
           isInstalledCapabilityReady(item) &&
+          isVisibleCapability(item.manifest) &&
           item.manifest.kind.includes("turn-game") &&
           item.manifest.entrypoints.client &&
           item.manifest.contributions?.conversationGame,
@@ -491,6 +498,11 @@ export function ConversationInput({
     });
   }, [activeChatId, qc]);
   const messagesData = qc.getQueryData<InfiniteData<Message[]>>(chatKeys.messages(activeChatId ?? ""));
+  const contextMessages = useMemo(() => [...(messagesData?.pages ?? [])].reverse().flat(), [messagesData]);
+  const contextBudget = useMemo(
+    () => resolveChatContextBudget(contextMessages, activeChat?.connectionId, contextConnections, sidecarMaxContext),
+    [activeChat?.connectionId, contextConnections, contextMessages, sidecarMaxContext],
+  );
   const isProfessorMariChat = activeChatCharacters?.some((character) => character.id === PROFESSOR_MARI_ID) ?? false;
   const hasMessages = (messagesData?.pages ?? []).some((page) => page.length > 0);
   const visibleMariChips =
@@ -629,12 +641,6 @@ export function ConversationInput({
     },
     [activeChatId, setInputDraft, syncInputState, guidedPlanStep, recordMariPlanAnswer, clearMariPlan],
   );
-  useEffect(() => {
-    if (professorMariSuggestionsEnabled) return;
-    clearMariChips();
-    clearMariPlan();
-  }, [clearMariChips, clearMariPlan, professorMariSuggestionsEnabled]);
-
   useEffect(() => {
     const handleCardAssetInsert = (event: Event) => {
       const detail = (event as CustomEvent<CardAssetInsertDetail>).detail;
@@ -1884,6 +1890,7 @@ export function ConversationInput({
 
   const ensureInputVisible = useCallback(() => {
     if (typeof window === "undefined" || !window.matchMedia("(max-width: 767px)").matches) return;
+    if (isIosWebKitBrowser(navigator.userAgent, navigator.platform, navigator.maxTouchPoints)) return;
     const scroll = () => {
       const inputBar = inputBarRef.current;
       const viewport = window.visualViewport;
@@ -2220,11 +2227,11 @@ export function ConversationInput({
 
         {/* Quick Switchers — desktop: inline, mobile: chevron */}
         <div className="hidden shrink-0 items-center gap-1 sm:flex">
-          <QuickConnectionSwitcher />
+          <QuickConnectionSwitcher contextBudget={showContextUsage ? contextBudget : null} />
           <QuickPersonaSwitcher />
         </div>
         <div className="flex shrink-0 sm:hidden">
-          <QuickSwitcherMobile />
+          <QuickSwitcherMobile contextBudget={showContextUsage ? contextBudget : null} />
         </div>
 
         {/* Textarea */}

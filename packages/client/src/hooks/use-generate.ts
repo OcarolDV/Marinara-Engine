@@ -5,7 +5,8 @@ import { useCallback, useRef } from "react";
 import { characterDataSchema, normalizeAvatarCrop, type AvatarCrop } from "@marinara-engine/shared";
 import { useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
 import { toast, type ExternalToast } from "sonner";
-import { api, ApiError } from "../lib/api-client";
+import { api, ApiError, isPassiveStreamDisconnect } from "../lib/api-client";
+import { recordClientRuntimeEvent } from "../lib/client-runtime-diagnostics";
 import {
   formatAgentFailuresToast,
   illustratorRetryTargetsForFailures,
@@ -59,6 +60,7 @@ import {
   resolveChatPersonaCandidate,
   type AgentWriteApprovalProposal,
   type AgentCallDebugEvent,
+  type AgentTaskProgress,
   type CharacterCardFieldUpdate,
   type EditableCharacterCardField,
   type MariGuidedPlanStep,
@@ -76,6 +78,7 @@ type RetryAgentsOptions = {
   secretPlotRerollMode?: "full" | "turn_only";
   agentPromptTemplateIds?: Record<string, string>;
   illustratorPromptReviewOverride?: {
+    subjectOnly?: boolean;
     resultData: Record<string, unknown>;
     prompt: string;
     negativePrompt?: string;
@@ -150,8 +153,10 @@ function getAgentWarningToastKey(data: AgentWarningToastData | null, chatId: str
   return `${code}:${message}`;
 }
 
+/** Shows each agent warning once, unless the user disabled the paid default warning. */
 function showAgentWarning(raw: unknown, chatId: string) {
   const data = raw && typeof raw === "object" ? (raw as AgentWarningToastData) : null;
+  if (data?.code === "default_agent_connection_active" && !useUIStore.getState().showPaidAgentConnectionWarning) return;
   const message = typeof data?.message === "string" ? data.message : "Agent warning";
   const warningKey = getAgentWarningToastKey(data, chatId, message);
   console.warn("[Agent warning]", raw);
@@ -1043,11 +1048,6 @@ function isAbortError(error: unknown) {
   return error instanceof DOMException && error.name === "AbortError";
 }
 
-function isPassiveStreamDisconnect(error: unknown, pageWasHiddenDuringStream: boolean, signal: AbortSignal) {
-  if (!pageWasHiddenDuringStream || signal.aborted || isAbortError(error) || error instanceof ApiError) return false;
-  return error instanceof Error;
-}
-
 async function refreshVisibleGameStateAfterGeneration(chatId: string) {
   const existing = pendingVisibleGameStateRefreshes.get(chatId);
   if (existing) return existing;
@@ -1288,8 +1288,13 @@ export function useGenerate() {
         setStreaming(true, params.chatId);
         clearThoughtBubbles();
         clearCyoaChoices();
-        clearMariChips();
-        clearMariPlan();
+        // #5753: the Mari chips/plan slots are app-wide - only clear them when
+        // they belong to THIS chat, or a regular chat's generation wipes a
+        // Mari chat's pending suggestions (observed: a held proposal's Accept
+        // chip vanishing after unrelated navigation).
+        const agentState = useAgentStore.getState();
+        if (agentState.mariChipsChatId === params.chatId) clearMariChips();
+        if (agentState.mariPlanChatId === params.chatId) clearMariPlan();
         clearFailedAgentTypes(params.chatId);
         setRegenerateMessageId(params.regenerateMessageId ?? null);
       }
@@ -1313,27 +1318,75 @@ export function useGenerate() {
           qc.getQueryData<any>(chatKeys.detail(params.chatId)) ??
           (qc.getQueryData<any[]>(chatKeys.list()) ?? []).find((c: any) => c.id === params.chatId);
         const chatPersonaId = activeChat?.personaId as string | null | undefined;
+        const chatPersonaCharacterId = activeChat?.personaCharacterId as string | null | undefined;
+        const cachedCharacters = qc.getQueryData<
+          Array<{ id: string; data: string | Record<string, unknown>; avatarPath?: string | null }>
+        >(characterKeys.list());
         // Roleplay may intentionally have no Persona. Keep optimistic snapshot
         // stamping identical to the server's Conversation-only fallback policy.
         const snapshotPersona = cachedPersonas
           ? resolveChatPersonaCandidate(cachedPersonas, chatPersonaId, activeChat?.mode)
           : null;
-        const personaSnapshot = snapshotPersona
-          ? {
-              personaId: snapshotPersona.id,
-              name: snapshotPersona.name,
-              description: snapshotPersona.description || "",
-              personality: snapshotPersona.personality || "",
-              scenario: snapshotPersona.scenario || "",
-              backstory: snapshotPersona.backstory || "",
-              appearance: snapshotPersona.appearance || "",
-              avatarUrl: snapshotPersona.avatarPath || null,
-              avatarCrop: snapshotPersona.avatarCrop ? JSON.stringify(snapshotPersona.avatarCrop) : null,
-              nameColor: snapshotPersona.nameColor || null,
-              dialogueColor: snapshotPersona.dialogueColor || null,
-              boxColor: snapshotPersona.boxColor || null,
-            }
+        const snapshotCharacter = chatPersonaCharacterId
+          ? cachedCharacters?.find((character) => character.id === chatPersonaCharacterId)
           : null;
+        const characterData = snapshotCharacter
+          ? (() => {
+              try {
+                return characterDataSchema.safeParse(
+                  typeof snapshotCharacter.data === "string"
+                    ? JSON.parse(snapshotCharacter.data)
+                    : snapshotCharacter.data,
+                );
+              } catch {
+                return { success: false as const };
+              }
+            })()
+          : null;
+        const personaSnapshot = characterData?.success
+          ? {
+              personaId: snapshotCharacter!.id,
+              source: "character" as const,
+              name: characterData.data.name,
+              description: characterData.data.description || "",
+              personality: characterData.data.personality || "",
+              scenario: characterData.data.scenario || "",
+              backstory: characterData.data.extensions?.backstory || "",
+              appearance: characterData.data.extensions?.appearance || "",
+              avatarUrl: snapshotCharacter!.avatarPath || null,
+              avatarCrop: characterData.data.extensions?.avatarCrop
+                ? JSON.stringify(characterData.data.extensions.avatarCrop)
+                : null,
+              nameColor:
+                typeof characterData.data.extensions?.nameColor === "string"
+                  ? characterData.data.extensions.nameColor
+                  : null,
+              dialogueColor:
+                typeof characterData.data.extensions?.dialogueColor === "string"
+                  ? characterData.data.extensions.dialogueColor
+                  : null,
+              boxColor:
+                typeof characterData.data.extensions?.boxColor === "string"
+                  ? characterData.data.extensions.boxColor
+                  : null,
+            }
+          : !chatPersonaCharacterId && snapshotPersona
+            ? {
+                personaId: snapshotPersona.id,
+                source: "persona" as const,
+                name: snapshotPersona.name,
+                description: snapshotPersona.description || "",
+                personality: snapshotPersona.personality || "",
+                scenario: snapshotPersona.scenario || "",
+                backstory: snapshotPersona.backstory || "",
+                appearance: snapshotPersona.appearance || "",
+                avatarUrl: snapshotPersona.avatarPath || null,
+                avatarCrop: snapshotPersona.avatarCrop ? JSON.stringify(snapshotPersona.avatarCrop) : null,
+                nameColor: snapshotPersona.nameColor || null,
+                dialogueColor: snapshotPersona.dialogueColor || null,
+                boxColor: snapshotPersona.boxColor || null,
+              }
+            : null;
 
         const optimisticMsg: Message = {
           id: `__optimistic_${Date.now()}`,
@@ -1828,6 +1881,13 @@ export function useGenerate() {
               break;
             }
 
+            case "agent_progress": {
+              useAgentStore
+                .getState()
+                .updateTaskProgress(params.chatId, agentProcessingRunId, event.data as AgentTaskProgress);
+              break;
+            }
+
             case "agent_warning": {
               showAgentWarning(event.data, params.chatId);
               break;
@@ -2113,6 +2173,14 @@ export function useGenerate() {
               const turn = event.data as { characterId: string; characterName: string; index: number };
               sawGroupTurn = true;
               leadingSpeakerPrefixFilter.addLabels([turn.characterName]);
+              // Each character in a group turn saves its own message, so the
+              // previous `message_saved` must not leave the status reading
+              // "preparing" while the next character is still narrating. Guarded
+              // by stream ownership for the same reason the set is: a queued
+              // event from a superseded stream must not touch its replacement.
+              if (isGameGeneration && useChatStore.getState().abortControllers.get(params.chatId) === abortController) {
+                useChatStore.getState().setNarrationSaved(params.chatId, false);
+              }
 
               // If this isn't the first character, flush the previous one's content
               if (turn.index > 0) {
@@ -2248,6 +2316,23 @@ export function useGenerate() {
               break;
             }
 
+            case "gm_verb": {
+              // A package-declared GM event verb (#5798). Addressed by an explicit packageId on the
+              // envelope rather than by a convention field inside the payload, so nothing has to
+              // agree about where the address lives. Transient by design: one synchronous dispatch,
+              // no queue and no replay, so a package not yet mounted simply misses it.
+              const verbEvent = event.data as { packageId?: string } | null;
+              if (verbEvent?.packageId) {
+                dispatchCapabilityClientEvent({
+                  packageId: verbEvent.packageId,
+                  type: event.type,
+                  chatId: params.chatId,
+                  data: event.data,
+                });
+              }
+              break;
+            }
+
             case "text_rewrite": {
               // A post-processing editor replaced the message — update displayed text.
               const rw = event.data as {
@@ -2346,6 +2431,18 @@ export function useGenerate() {
               if (savedMessage.role === "assistant") {
                 completeQueuedResponse(params.chatId, savedMessage.characterId);
                 currentGroupTurnSavedMessage = savedMessage;
+                if (
+                  isGameGeneration &&
+                  useChatStore.getState().abortControllers.get(params.chatId) === abortController
+                ) {
+                  // The narration text is durable now. The request stays open for
+                  // post-processing, the refresh, and scene analysis, so this is
+                  // the point where the Game Master has stopped writing.
+                  //
+                  // Ownership-checked: a queued event from a superseded stream
+                  // would otherwise mark the generation that replaced it as done.
+                  useChatStore.getState().setNarrationSaved(params.chatId, true);
+                }
               }
               await qc.cancelQueries({ queryKey: chatKeys.messages(params.chatId), exact: true });
               persistedMessages.set(savedMessage.id, savedMessage);
@@ -2581,6 +2678,7 @@ export function useGenerate() {
             }
 
             case "illustration": {
+              recordClientRuntimeEvent("image-arrived");
               illustrationSettled = true;
               const illData = event.data as {
                 messageId: string;
@@ -2588,11 +2686,10 @@ export function useGenerate() {
                 reason?: string;
               };
               toast(illData.reason ? `🎨 ${illData.reason}` : "🎨 Scene illustration generated");
-              // During streaming the real message is deferred — refreshing now
-              // would insert it into the cache alongside the StreamingIndicator,
-              // causing a duplicate flash. The finally block's authoritative
-              // refresh will pick up the illustration attachment from DB.
-              if (!streamingEnabled && !isGameGeneration) {
+              // Roleplay can already have handed off to the durable row while other
+              // agents still own this stream. Show its saved image immediately;
+              // only defer when the live message presentation still owns the row.
+              if (!isGameGeneration && canRefreshCurrentMessagesNow()) {
                 await refreshMessagesAuthoritatively(qc, params.chatId, persistedMessages.values());
               }
               void qc.invalidateQueries({ queryKey: ["gallery", params.chatId] });
@@ -3628,6 +3725,12 @@ export function useGenerate() {
               });
               break;
             }
+            case "agent_progress": {
+              useAgentStore
+                .getState()
+                .updateTaskProgress(chatId, agentProcessingRunId, event.data as AgentTaskProgress);
+              break;
+            }
             case "agents_retry_failed": {
               hasError = true;
               const failedList = event.data as Array<{
@@ -3663,6 +3766,29 @@ export function useGenerate() {
               }
               break;
             }
+            case "metadata_patch": {
+              // The retry route emits this and this switch had no case for it, so a metadata write on
+              // a retried turn never reached the package until the chat was reopened. Load-bearing
+              // for GM state verbs (#5798): props re-delivery after the refetch IS the delivery
+              // mechanism — there is no second event carrying the value.
+              qc.invalidateQueries({ queryKey: chatKeys.detail(chatId) });
+              qc.invalidateQueries({ queryKey: lorebookKeys.active(chatId) });
+              break;
+            }
+            case "gm_verb": {
+              // GM verbs do not run on the agents-retry route today. The case is here anyway so the
+              // next wiring does not have to rediscover that this switch is a twin of the main one.
+              const verbEvent = event.data as { packageId?: string } | null;
+              if (verbEvent?.packageId) {
+                dispatchCapabilityClientEvent({
+                  packageId: verbEvent.packageId,
+                  type: event.type,
+                  chatId,
+                  data: event.data,
+                });
+              }
+              break;
+            }
             case "game_map_update": {
               const map = event.data as GameMap | null;
               if (map) applyGameMapUpdate(qc, chatId, map);
@@ -3677,6 +3803,7 @@ export function useGenerate() {
               break;
             }
             case "illustration": {
+              recordClientRuntimeEvent("image-arrived");
               const illData = event.data as { messageId: string; imageUrl: string; reason?: string };
               toast(illData.reason ? `🎨 ${illData.reason}` : "🎨 Scene illustration generated");
               // Refresh messages so the illustration attachment appears

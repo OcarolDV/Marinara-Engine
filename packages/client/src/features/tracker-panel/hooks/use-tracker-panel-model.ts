@@ -1,3 +1,4 @@
+import { isVisibleTrackerSection } from "../../../lib/ui-visibility";
 import { useCallback, useMemo } from "react";
 import type { PresentCharacter } from "@marinara-engine/shared";
 import { useAgentConfigs, type AgentConfigRow } from "../../../hooks/use-agents";
@@ -57,7 +58,7 @@ export function useTrackerPanelModel({
   const personaTrackerEnabled = isSectionEnabled("persona");
   const characterTrackerEnabled = isSectionEnabled("characters");
   const orderedTrackerSections = useMemo(
-    () => trackerPanelSectionOrder.filter(isSectionEnabled),
+    () => trackerPanelSectionOrder.filter((section) => isVisibleTrackerSection(section) && isSectionEnabled(section)),
     [isSectionEnabled, trackerPanelSectionOrder],
   );
   const spriteExpressionLookupEnabled =

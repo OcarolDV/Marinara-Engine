@@ -43,10 +43,14 @@ import { normalizeGemma4Delimiters } from "../llm/textual-tool-call-parser.js";
 import { wrapContent } from "../prompt/format-engine.js";
 import { sanitizePromptLeaf } from "../prompt/prompt-escaping.js";
 import { settleAgentJobsWithConcurrencyLimit } from "./agent-concurrency.js";
+import { completeAgentCall } from "./agent-progress.js";
 import { normalizeCyoaChoiceOutput } from "./cyoa-choice-normalization.js";
 import { getAssetManifest } from "../game/asset-manifest.service.js";
 import { normalizeBeholderProse } from "./beholder-normalizer.js";
 import {
+  beholderDeltaLacksRemoval,
+  beholderTakeoffClause,
+  mergeBeholderWornRemovals,
   BEHOLDER_PASS_LANES,
   buildBeholderUserMessage,
   formatBeholderRequestContext,
@@ -831,7 +835,7 @@ export async function executeAgent(
     });
 
     let responseText = "";
-    const result = await provider.chatComplete(messages, {
+    const result = await completeAgentCall(context, [config], provider, messages, {
       model,
       temperature,
       maxTokens,
@@ -883,7 +887,7 @@ export async function executeAgent(
         messages: debugMessages(retryMessages),
       });
       let retryResponseText = "";
-      const retryResult = await provider.chatComplete(retryMessages, {
+      const retryResult = await completeAgentCall(context, [config], provider, retryMessages, {
         model,
         temperature,
         maxTokens,
@@ -1006,7 +1010,7 @@ async function executeBeholderLanePasses(args: {
       });
 
       let laneText = "";
-      const result = await provider.chatComplete(messages, {
+      const result = await completeAgentCall(context, [config], provider, messages, {
         model,
         temperature,
         maxTokens,
@@ -1067,6 +1071,59 @@ async function executeBeholderLanePasses(args: {
   }
 
   const merged = mergeBeholderLaneDeltas(laneResponses);
+
+  // Compound take-off repair. When one sentence both removes a garment and adds
+  // another, the extractor reports the addition and drops the removal — and the
+  // garment it failed to take off stays in state and is fed back into every later
+  // turn, so a single miss compounds for the rest of the scene. Re-asking the worn
+  // lane with just the take-off clause recovers it, because removal-only prose is
+  // what the model handles reliably. Only worn_remove is taken from the answer.
+  //
+  // Costs one extra call, and only on a turn that shows something coming off and
+  // reported no removal — an ordinary turn pays nothing.
+  const takeoffClause = beholderDeltaLacksRemoval(merged.delta)
+    ? beholderTakeoffClause(beholderNarration(config, context))
+    : null;
+  if (takeoffClause) {
+    try {
+      const repairMessages = prepareAgentProviderMessages(
+        buildBeholderMessages(config, lanePrompts.worn, context, takeoffClause),
+      );
+      // Through the debug path like every other provider call. This one is easy to
+      // miss precisely because it is conditional, and it is the call you most want to
+      // see when a removal did not come back.
+      emitAgentDebug(context, {
+        stage: "request",
+        ...agentDebugBase(config, model, temperature, maxTokens),
+        messageCount: repairMessages.length,
+        messages: debugMessages(repairMessages),
+      });
+      const repair = await completeAgentCall(context, [config], provider, repairMessages, {
+        model,
+        temperature,
+        maxTokens,
+        enableCaching: config.enableCaching,
+        anthropicExtendedCacheTtl: config.anthropicExtendedCacheTtl,
+        cachingAtDepth: config.cachingAtDepth,
+        customParameters: args.customParameters,
+        enabledParameters: config.enabledParameters,
+        suppressModelParameters: config.suppressModelParameters,
+        stream: false,
+        signal: agentCallSignal(context.signal),
+      });
+      totalTokens += repair.usage?.totalTokens ?? 0;
+      const repairData = parseAgentResponse(config, (repair.content ?? "").trim()).data;
+      if (isBeholderLaneResponse(repairData) && isRecord(repairData) && repairData.changed === true) {
+        mergeBeholderWornRemovals(merged.delta, repairData.delta);
+        merged.changed = true;
+        logger.info(`[agent] ${config.type} take-off repair recovered a removal`);
+      }
+    } catch (error) {
+      // The repair is an improvement on the turn, never a reason to lose it.
+      logger.warn("[agent] %s take-off repair failed: %s", config.type, extractErrorMessage(error));
+    }
+  }
+
   logger.info(
     `[agent] ${config.type} done (${laneResponses.length}/${BEHOLDER_PASS_LANES.length} passes, changed=${merged.changed}, ${Date.now() - startTime}ms)`,
   );
@@ -1122,7 +1179,7 @@ async function executeAgentWithTools(
       tools: debugToolNames(toolContext.tools),
       round: round + 1,
     });
-    const result = await provider.chatComplete(providerMessages, {
+    const result = await completeAgentCall(context, [config], provider, providerMessages, {
       model,
       temperature,
       maxTokens,
@@ -1218,7 +1275,7 @@ async function executeAgentWithTools(
     round: maxToolRounds + 1,
   });
   const finalRoundStartedAt = Date.now();
-  const finalResult = await provider.chatComplete(finalProviderMessages, {
+  const finalResult = await completeAgentCall(context, [config], provider, finalProviderMessages, {
     model,
     temperature,
     maxTokens,
@@ -1455,7 +1512,7 @@ export async function executeAgentBatch(
     // timeouts (e.g. Cloudflare 524) on large batch responses.
     let responseText = "";
     const result = await runProviderJob(() =>
-      provider.chatComplete(messages, {
+      completeAgentCall(context, configs, provider, messages, {
         model,
         temperature,
         maxTokens: batchMaxTokens,
@@ -2067,13 +2124,24 @@ function buildCustomAgentCapabilityBlock(config: AgentExecConfig, context: Agent
  * history is background, but here the message IS the thing being extracted from, so
  * cutting it silently hides whatever state the rest of it described.
  */
-function buildBeholderMessages(config: AgentExecConfig, template: string, context: AgentContext): ChatMessage[] {
+function beholderNarration(config: AgentExecConfig, context: AgentContext): string {
   const contextSize = normalizeAgentContextSize(config.settings.contextSize);
   const recent = contextSize > 0 ? context.recentMessages.slice(-contextSize) : [];
-  const narration = recent
+  return recent
     .map((message) => normalizeBeholderProse(message.content))
     .filter((text) => text.length > 0)
     .join("\n");
+}
+
+function buildBeholderMessages(
+  config: AgentExecConfig,
+  template: string,
+  context: AgentContext,
+  narrationOverride?: string,
+): ChatMessage[] {
+  // The explicit argument wins (the take-off repair passes one clause), then a
+  // directive typed by the operator, then the story itself.
+  const narration = narrationOverride ?? context.narrationOverride ?? beholderNarration(config, context);
   const user = buildBeholderUserMessage(context.memory._beholderState, context.persona?.name ?? null, narration);
   return [
     { role: "system", content: template },

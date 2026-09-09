@@ -1,3 +1,4 @@
+import { UI_VISIBILITY, isVisibleCapability, isVisibleChatMode } from "../../lib/ui-visibility";
 import { createPortal } from "react-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
@@ -56,7 +57,11 @@ import { playConfiguredNotificationPing } from "../../lib/notification-sound";
 import { rememberBoundedSetValue } from "../../lib/bounded-set";
 import { messageHasPendingPostProcessing } from "../../lib/chat-message-extra";
 import { isMessageHiddenFromUser } from "../../lib/chat-message-visibility";
-import { getTranscriptRenderWindow, TRANSCRIPT_RENDER_WINDOW_STEP } from "../../lib/transcript-render-window";
+import {
+  getTranscriptRenderWindow,
+  resolveTranscriptRenderWindowSize,
+  TRANSCRIPT_RENDER_WINDOW_STEP,
+} from "../../lib/transcript-render-window";
 import { useUIStore } from "../../stores/ui.store";
 import { useChatStore } from "../../stores/chat.store";
 import { useGameStateStore } from "../../stores/game-state.store";
@@ -153,6 +158,7 @@ const ActiveLorebookEntriesContent = lazy(async () => {
 const roleplayNotificationSeenKeys = new Set<string>();
 const MAX_ROLEPLAY_NOTIFICATION_SEEN_KEYS = 5_000;
 const MOBILE_FLOATING_PANEL_PADDING = 8;
+const BACKGROUND_CROSSFADE_MS = 700;
 
 type MobileFloatingPanelFrame = {
   top: number;
@@ -230,6 +236,7 @@ function CrossfadeBackground({
   const [bgB, setBgB] = useState<string | null>(null);
   const [aActive, setAActive] = useState(true);
   const activeSlot = useRef<"a" | "b">("a");
+  const cleanupTimerRef = useRef<number | null>(null);
   const backgroundBlurStyle = getBackgroundBlurStyle(blurPx);
 
   useEffect(() => {
@@ -259,17 +266,33 @@ function CrossfadeBackground({
     };
 
     function applyUrl(nextUrl: string | null) {
+      if (cleanupTimerRef.current !== null) window.clearTimeout(cleanupTimerRef.current);
       if (activeSlot.current === "a") {
         setBgB(nextUrl);
         setAActive(false);
         activeSlot.current = "b";
+        cleanupTimerRef.current = window.setTimeout(() => {
+          cleanupTimerRef.current = null;
+          setBgA(null);
+        }, BACKGROUND_CROSSFADE_MS);
       } else {
         setBgA(nextUrl);
         setAActive(true);
         activeSlot.current = "a";
+        cleanupTimerRef.current = window.setTimeout(() => {
+          cleanupTimerRef.current = null;
+          setBgB(null);
+        }, BACKGROUND_CROSSFADE_MS);
       }
     }
   }, [bgA, bgB, url]);
+
+  useEffect(
+    () => () => {
+      if (cleanupTimerRef.current !== null) window.clearTimeout(cleanupTimerRef.current);
+    },
+    [],
+  );
 
   return (
     <>
@@ -283,7 +306,7 @@ function CrossfadeBackground({
         )}
         style={{
           opacity: aActive && bgA ? 1 : 0,
-          transition: "opacity 700ms ease-in-out, filter 180ms ease-out, transform 180ms ease-out",
+          transition: `opacity ${BACKGROUND_CROSSFADE_MS}ms ease-in-out, filter 180ms ease-out, transform 180ms ease-out`,
           ...backgroundBlurStyle,
         }}
       />
@@ -297,7 +320,7 @@ function CrossfadeBackground({
         )}
         style={{
           opacity: !aActive && bgB ? 1 : 0,
-          transition: "opacity 700ms ease-in-out, filter 180ms ease-out, transform 180ms ease-out",
+          transition: `opacity ${BACKGROUND_CROSSFADE_MS}ms ease-in-out, filter 180ms ease-out, transform 180ms ease-out`,
           ...backgroundBlurStyle,
         }}
       />
@@ -1073,6 +1096,7 @@ function AuthorNotesButton({
             createPortal(
               <div
                 ref={panelRef}
+                data-chat-floating-panel
                 className={cn(NEUTRAL_PANEL_SHELL, NEUTRAL_PANEL_SCROLL_AREA, "fixed z-[9999] overflow-y-auto p-3")}
                 style={{
                   top: mobileFrame.top,
@@ -1141,7 +1165,9 @@ function AuthorNotesButton({
 type RoleplaySurfaceProps = {
   activeChatId: string;
   chat: ChatData | null | undefined;
-  allChats: Array<{ id: string; name: string; metadata?: string | Record<string, unknown> | null }> | undefined;
+  allChats:
+    | Array<{ id: string; name: string; mode: string; metadata?: string | Record<string, unknown> | null }>
+    | undefined;
   chatMeta: Record<string, any>;
   chatMode: string;
   isRoleplay: boolean;
@@ -1229,7 +1255,7 @@ type RoleplaySurfaceProps = {
   onOpenScheduleEditor?: ComponentProps<typeof ChatCommonOverlays>["onOpenScheduleEditor"];
   onCloseSettings: () => void;
   onCloseGallery: () => void;
-  onIllustrate?: () => void;
+  onIllustrate?: (prompt?: string) => void;
   onIllustrateWithAgent?: (agentType: string) => void | Promise<void>;
   onGenerateBackground?: () => void | Promise<void>;
   onGenerateVideo?: () => void | Promise<void>;
@@ -1382,7 +1408,8 @@ export function ChatRoleplaySurface({
   const enabledConversationCapabilities =
     chatMeta.enableAgents === true
       ? installedCapabilities.filter((item) => {
-          if (item.status !== "active" || !item.manifest.entrypoints.client) return false;
+          if (!isVisibleCapability(item.manifest) || item.status !== "active" || !item.manifest.entrypoints.client)
+            return false;
           if (item.manifest.kind.includes("conversation-calls")) return false;
           const contributedAgentIds = item.manifest.contributions?.agentDetail?.agentIds ?? [];
           return activeAgentIds.includes(item.id) || contributedAgentIds.some((id) => activeAgentIds.includes(id));
@@ -1406,6 +1433,9 @@ export function ChatRoleplaySurface({
   const streamedMessageId = useChatStore((s) => s.streamedMessageIds.get(activeChatId) ?? null);
   const hasMobileDraftInput = useChatStore((s) => isMobileToolbarViewport && s.hasCurrentInput);
   const hasLiveStream = isStreaming;
+  const visibleConnectedChat = allChats?.find(
+    (candidate) => candidate.id === chat?.connectedChatId && isVisibleChatMode(candidate.mode),
+  );
   const linkedChatName = chat?.connectedChatId
     ? getConnectedChatDisplayName(allChats?.find((c) => c.id === chat.connectedChatId))
     : undefined;
@@ -1421,51 +1451,21 @@ export function ChatRoleplaySurface({
   const pendingPostProcessingKeysRef = useRef<Set<string>>(new Set());
   const topChromeRef = useRef<HTMLDivElement>(null);
   const inputChromeRef = useRef<HTMLDivElement>(null);
-  const composerScrollTopRef = useRef(0);
   const chromeInsetsRef = useRef<{ target: HTMLDivElement | null; top: number; bottom: number }>({
     target: null,
     top: -1,
     bottom: -1,
   });
-  const [mobileHistoryComposerCollapsed, setMobileHistoryComposerCollapsed] = useState(false);
   const [authorNotesOpenOwner, setAuthorNotesOpenOwner] = useState<"expanded" | "compact" | null>(null);
   const compactToolbarOwnsAuthorNotes = centerCompact || isMobileToolbarViewport;
   const expandedAuthorNotesOpen = authorNotesOpenOwner === "expanded";
   const compactAuthorNotesOpen = authorNotesOpenOwner === "compact";
   const keyboardOpen = useChatKeyboardOpen();
   const composerFocused = useChatComposerFocused();
+  const mobileComposerActive = isMobileToolbarViewport && composerFocused;
   const ambientVisualsPaused =
     generationVisualsPaused || (isMobileToolbarViewport && (keyboardOpen || composerFocused || hasMobileDraftInput));
   const weatherEffectsPaused = isMobileToolbarViewport && (keyboardOpen || composerFocused || hasMobileDraftInput);
-  const shouldKeepMobileComposerOpen =
-    keyboardOpen || composerFocused || hasLiveStream || hasMobileDraftInput || isFetchingNextPage;
-
-  useEffect(() => {
-    if (shouldKeepMobileComposerOpen) setMobileHistoryComposerCollapsed(false);
-  }, [shouldKeepMobileComposerOpen]);
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const onScroll = () => {
-      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      const nearBottom = distFromBottom < 150;
-      const currentTop = el.scrollTop;
-      const previousTop = composerScrollTopRef.current;
-      const isMobile = typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches;
-      const composerHasFocus = document.activeElement?.matches("[data-chat-composer]") === true;
-      if (!isMobile || shouldKeepMobileComposerOpen || composerHasFocus || nearBottom) {
-        setMobileHistoryComposerCollapsed(false);
-      } else if (currentTop > previousTop + 18) {
-        setMobileHistoryComposerCollapsed(false);
-      } else if (currentTop < previousTop - 12 && distFromBottom > 180) {
-        setMobileHistoryComposerCollapsed(true);
-      }
-      composerScrollTopRef.current = currentTop;
-    };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
-  }, [scrollRef, shouldKeepMobileComposerOpen]);
   const setExpandedAuthorNotesOpen = useCallback((open: boolean) => {
     setAuthorNotesOpenOwner(open ? "expanded" : null);
   }, []);
@@ -1518,9 +1518,18 @@ export function ChatRoleplaySurface({
   }, [activeChatId]);
 
   const messagesLength = messages?.length ?? 0;
+  const messagesPerPage = useUIStore((s) => s.messagesPerPage);
+  const maxMountedMessages = resolveTranscriptRenderWindowSize(messagesPerPage);
+  // The window size follows the "Messages per page" setting, which can change while
+  // this chat stays mounted. A pinned start index is relative to the old size, so
+  // re-anchor to the latest messages the same way a chat switch does.
+  useLayoutEffect(() => {
+    setTranscriptWindowStart(null);
+    pendingLoadMoreRevealRef.current = null;
+  }, [maxMountedMessages]);
   const transcriptWindow = useMemo(
-    () => getTranscriptRenderWindow(messages, { startIndex: transcriptWindowStart }),
-    [messages, transcriptWindowStart],
+    () => getTranscriptRenderWindow(messages, { maxMountedMessages, startIndex: transcriptWindowStart }),
+    [maxMountedMessages, messages, transcriptWindowStart],
   );
   const gotoRequest = useChatStore((state) => state.gotoRequest);
   // ChatArea clears the request after scrolling; only reveal its transcript window once.
@@ -1790,7 +1799,11 @@ export function ChatRoleplaySurface({
   ]);
 
   return (
-    <div data-component="ChatArea.Roleplay" className="flex flex-1 overflow-hidden">
+    <div
+      data-component="ChatArea.Roleplay"
+      data-mobile-composer-active={mobileComposerActive || undefined}
+      className="flex flex-1 overflow-hidden"
+    >
       <div
         className={cn(
           "rpg-chat-area mari-chat-area mari-card-css relative flex flex-1 flex-col overflow-hidden",
@@ -1840,7 +1853,11 @@ export function ChatRoleplaySurface({
                   }}
                 >
                   {chat && chatMeta.enableAgents && (
-                    <div data-chat-help="agents" className="pointer-events-auto flex-1 overflow-x-auto">
+                    <div
+                      data-chat-help="agents"
+                      data-roleplay-agent-window
+                      className="pointer-events-auto flex-1 overflow-x-auto"
+                    >
                       <Suspense fallback={null}>
                         <RoleplayHUD
                           chatId={chat.id}
@@ -1936,7 +1953,7 @@ export function ChatRoleplaySurface({
                         panelAction="gallery"
                         onClick={onOpenGallery}
                       />
-                      {chat?.connectedChatId && (
+                      {visibleConnectedChat && (
                         <ChatToolbarButton
                           icon={<ArrowRightLeft size="0.875rem" />}
                           helpTarget="connected-chat"
@@ -1945,7 +1962,7 @@ export function ChatRoleplaySurface({
                               ? t("chat.toolbar.switchTo", { name: linkedChatName })
                               : t("chat.toolbar.connectedChat")
                           }
-                          onClick={() => useChatStore.getState().setActiveChatId(chat.connectedChatId!)}
+                          onClick={() => useChatStore.getState().setActiveChatId(visibleConnectedChat.id)}
                         />
                       )}
                       <ChatMessageSearch chatId={activeChatId} />
@@ -1974,7 +1991,7 @@ export function ChatRoleplaySurface({
                       paddingRight: "calc(0.5rem + var(--tracker-panel-hud-clear-right, 0px))",
                     }}
                   >
-                    <div data-chat-help="agents" className="min-w-0 flex-1 overflow-x-auto">
+                    <div data-chat-help="agents" data-roleplay-agent-window className="min-w-0 flex-1 overflow-x-auto">
                       <Suspense fallback={null}>
                         <RoleplayHUD
                           chatId={chat.id}
@@ -2068,7 +2085,7 @@ export function ChatRoleplaySurface({
                           panelAction="gallery"
                           onClick={onOpenGallery}
                         />
-                        {chat?.connectedChatId && (
+                        {visibleConnectedChat && (
                           <ChatToolbarButton
                             icon={<ArrowRightLeft size="0.875rem" />}
                             helpTarget="connected-chat"
@@ -2077,7 +2094,7 @@ export function ChatRoleplaySurface({
                                 ? t("chat.toolbar.switchTo", { name: linkedChatName })
                                 : t("chat.toolbar.connectedChat")
                             }
-                            onClick={() => useChatStore.getState().setActiveChatId(chat.connectedChatId!)}
+                            onClick={() => useChatStore.getState().setActiveChatId(visibleConnectedChat.id)}
                           />
                         )}
                         <ChatMessageSearch chatId={activeChatId} />
@@ -2155,7 +2172,7 @@ export function ChatRoleplaySurface({
                         panelAction="gallery"
                         onClick={onOpenGallery}
                       />
-                      {chat?.connectedChatId && (
+                      {visibleConnectedChat && (
                         <ChatToolbarButton
                           icon={<ArrowRightLeft size="0.875rem" />}
                           helpTarget="connected-chat"
@@ -2164,7 +2181,7 @@ export function ChatRoleplaySurface({
                               ? t("chat.toolbar.switchTo", { name: linkedChatName })
                               : t("chat.toolbar.connectedChat")
                           }
-                          onClick={() => useChatStore.getState().setActiveChatId(chat.connectedChatId!)}
+                          onClick={() => useChatStore.getState().setActiveChatId(visibleConnectedChat.id)}
                         />
                       )}
                       <ChatMessageSearch chatId={activeChatId} />
@@ -2180,7 +2197,7 @@ export function ChatRoleplaySurface({
               </div>
             </div>
 
-            {encounterActive && (
+            {UI_VISIBILITY.combat && encounterActive && (
               <Suspense fallback={null}>
                 <EncounterModal />
               </Suspense>
@@ -2196,13 +2213,15 @@ export function ChatRoleplaySurface({
                 )}
                 style={{
                   paddingTop: "var(--mari-roleplay-content-padding-top, 16px)",
-                  paddingBottom: "var(--mari-roleplay-content-padding-bottom, 16px)",
+                  paddingBottom:
+                    "calc(var(--mari-roleplay-content-padding-bottom, 16px) + var(--mari-message-editor-scroll-space, 0px))",
                   scrollPaddingTop: "var(--mari-roleplay-scroll-padding-top, 16px)",
-                  scrollPaddingBottom: "var(--mari-roleplay-scroll-padding-bottom, 16px)",
+                  scrollPaddingBottom:
+                    "calc(var(--mari-roleplay-scroll-padding-bottom, 16px) + var(--mari-message-editor-scroll-space, 0px))",
                 }}
               >
                 {hasNextPage && (
-                  <div className="mb-3 flex justify-center">
+                  <div className="mari-chat-load-more mb-3 flex justify-center">
                     <button
                       onClick={handleLoadMoreClick}
                       disabled={isFetchingNextPage}
@@ -2379,8 +2398,6 @@ export function ChatRoleplaySurface({
                 <ChatInput
                   key={activeChatId}
                   mode={isRoleplay ? "roleplay" : "conversation"}
-                  mobileHistoryCollapsed={mobileHistoryComposerCollapsed}
-                  onMobileHistoryCollapsedChange={setMobileHistoryComposerCollapsed}
                   combatAgentEnabled={combatAgentEnabled}
                   onStartEncounter={onStartEncounter}
                   characterNames={characterNames}
@@ -2468,13 +2485,14 @@ export function ChatRoleplaySurface({
         onSelectAllBelowSelection={onSelectAllBelowSelection}
       />
       {conversationSurfacePackages.map((item) => (
-        <CapabilityElement
-          key={`${item.id}-conversation-surface`}
-          packageId={item.id}
-          view="surface"
-          capabilityProps={conversationCapabilityProps}
-          className="contents"
-        />
+        <div key={`${item.id}-conversation-surface`} data-roleplay-agent-window className="contents">
+          <CapabilityElement
+            packageId={item.id}
+            view="surface"
+            capabilityProps={conversationCapabilityProps}
+            className="contents"
+          />
+        </div>
       ))}
     </div>
   );

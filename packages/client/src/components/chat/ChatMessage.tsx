@@ -13,6 +13,8 @@ import {
 import { useChatGalleryFilenameIndex } from "../../hooks/use-characters";
 import { useReducedAmbientEffects } from "../../hooks/use-reduced-ambient-effects";
 import { PendingTypingDots } from "./PendingTypingDots";
+import { ChatImagePreview } from "./ChatImagePreview";
+import { recordClientRuntimeEvent } from "../../lib/client-runtime-diagnostics";
 import { isDiceRollResult } from "../dice/AnimatedDiceRoll";
 import { DiceMessageContent } from "./ConversationMessageShared";
 import {
@@ -98,7 +100,6 @@ import { MessageThinkingModal } from "./MessageThinkingModal";
 import { MESSAGE_ACTION_ICON_SIZE, MessageActionButton } from "./MessageActionButton";
 import { RoleplayStoryboardMessageMedia } from "./RoleplayStoryboardMessageMedia";
 
-const MESSAGE_SWIPE_ICON_SIZE = "1.15em";
 const MESSAGE_DOUBLE_TAP_MS = 320;
 const MESSAGE_DOUBLE_TAP_DISTANCE_PX = 26;
 const MESSAGE_CHROME_ACTIVE_ICON_CLASS =
@@ -819,6 +820,7 @@ const EditTextarea = memo(function EditTextarea({
   useLayoutEffect(() => {
     if (ref.current) {
       autoResize();
+      if (window.matchMedia("(max-width: 767px)").matches) ref.current.setSelectionRange(0, 0);
       ref.current.focus({ preventScroll: true });
     }
   }, [autoResize]);
@@ -828,9 +830,10 @@ const EditTextarea = memo(function EditTextarea({
   }, [onSave, quoteFormat]);
 
   return (
-    <div className="relative isolate z-20 flex flex-col gap-2">
+    <div className="relative isolate z-20 flex flex-col gap-2 max-md:gap-0">
       <textarea
         ref={ref}
+        data-chat-message-editor="true"
         defaultValue={formatTextQuotes(initialContent, quoteFormat)}
         readOnly={saving}
         aria-busy={saving}
@@ -1790,6 +1793,11 @@ export const ChatMessage = memo(function ChatMessage({
   const isSystem = message.role === "system";
   const isNarrator = message.role === "narrator";
   const isRoleplay = chatMode === "roleplay";
+  const alwaysDisplaySwipeMenu = useUIStore((state) =>
+    isRoleplay
+      ? state.alwaysDisplayRoleplaySwipeMenu
+      : chatMode === "conversation" && state.alwaysDisplayConversationSwipeMenu,
+  );
   const {
     chatFontSize,
     chatFontColor,
@@ -2004,7 +2012,7 @@ export const ChatMessage = memo(function ChatMessage({
       }),
     [],
   );
-  const ttsBusy = ttsState === "loading" || ttsState === "playing" || ttsState === "paused";
+  const ttsBusy = ttsState === "loading" || ttsState === "playing" || ttsState === "paused" || ttsState === "blocked";
   const isSpeakingThis = ttsActiveId === message.id;
   const isLoadingThis = isSpeakingThis && ttsState === "loading";
   const isPausedThis = isSpeakingThis && ttsState === "paused";
@@ -2027,7 +2035,8 @@ export const ChatMessage = memo(function ChatMessage({
     // Read directly from the singleton so we never act on stale React state
     const liveState = ttsService.getState();
     const liveActiveId = ttsService.getActiveId();
-    const liveBusy = liveState === "loading" || liveState === "playing" || liveState === "paused";
+    const liveBusy =
+      liveState === "loading" || liveState === "playing" || liveState === "paused" || liveState === "blocked";
     const liveIsThis = liveActiveId === message.id;
     if (liveBusy && !liveIsThis) return;
     if (liveIsThis) {
@@ -2307,7 +2316,17 @@ export const ChatMessage = memo(function ChatMessage({
   useLayoutEffect(() => {
     // Restore scroll position saved before the state change
     if (scrollRestoreRef.current) {
-      scrollRestoreRef.current.el.scrollTop = scrollRestoreRef.current.top;
+      const { el, top } = scrollRestoreRef.current;
+      el.scrollTop = top;
+      if (editing && window.matchMedia("(max-width: 767px)").matches) {
+        const editor = msgRef.current?.querySelector<HTMLTextAreaElement>("[data-chat-message-editor]");
+        if (editor) {
+          editor.scrollTop = 0;
+          // The action row can be far below a long message's first line.
+          // Align only the transcript, never scroll the mobile app shell.
+          el.scrollTop += editor.getBoundingClientRect().top - el.getBoundingClientRect().top - 8;
+        }
+      }
       scrollRestoreRef.current = null;
     }
   }, [editing]);
@@ -2336,6 +2355,7 @@ export const ChatMessage = memo(function ChatMessage({
         setEditSavePending(true);
         try {
           await onEdit?.(message.id, content);
+          recordClientRuntimeEvent("message-edited");
         } catch {
           toast.error(localizeUi("ui.chat.chatmessage.couldNotSaveThatEdit"));
           return;
@@ -2440,13 +2460,13 @@ export const ChatMessage = memo(function ChatMessage({
   // to preserve the correct persona name/avatar even after switching personas.
   // Fall back to the current personaInfo prop for older messages without snapshots.
   const msgPersona = isUser && extra.personaSnapshot ? extra.personaSnapshot : null;
-  const userName = msgPersona?.name ?? personaInfo?.name ?? "You";
+  const userName = msgPersona ? (msgPersona.name ?? "You") : (personaInfo?.name ?? "You");
   const charName = primaryCharInfo?.name ?? "Assistant";
-  const personaDescription = msgPersona?.description ?? personaInfo?.description;
-  const personaPersonality = msgPersona?.personality ?? personaInfo?.personality;
-  const personaBackstory = msgPersona?.backstory ?? personaInfo?.backstory;
-  const personaAppearance = msgPersona?.appearance ?? personaInfo?.appearance;
-  const personaScenario = msgPersona?.scenario ?? personaInfo?.scenario;
+  const personaDescription = msgPersona ? msgPersona.description : personaInfo?.description;
+  const personaPersonality = msgPersona ? msgPersona.personality : personaInfo?.personality;
+  const personaBackstory = msgPersona ? msgPersona.backstory : personaInfo?.backstory;
+  const personaAppearance = msgPersona ? msgPersona.appearance : personaInfo?.appearance;
+  const personaScenario = msgPersona ? msgPersona.scenario : personaInfo?.scenario;
   const macroCharacters = useMemo(() => {
     if (scopedCharacterMap?.size) {
       const candidates = Array.from(scopedCharacterMap.values()).filter(
@@ -2509,7 +2529,9 @@ export const ChatMessage = memo(function ChatMessage({
 
   const displayName = isUser ? userName : charName;
   const avatarUrl = isUser
-    ? (msgPersona?.avatarUrl ?? personaInfo?.avatarUrl ?? null)
+    ? msgPersona
+      ? (msgPersona.avatarUrl ?? null)
+      : (personaInfo?.avatarUrl ?? null)
     : (resolvedCharacterInfo?.avatarUrl ?? null);
   const personaExpressionId =
     isUser && typeof msgPersona?.personaId === "string" ? msgPersona.personaId : personaInfo?.id;
@@ -2521,7 +2543,9 @@ export const ChatMessage = memo(function ChatMessage({
         : null;
   const displayAvatarUrl = expressionAvatarUrl ?? avatarUrl;
   const personaAvatarCrop = isUser
-    ? (normalizeAvatarCrop(msgPersona?.avatarCrop) ?? personaInfo?.avatarCrop ?? null)
+    ? msgPersona
+      ? (normalizeAvatarCrop(msgPersona.avatarCrop) ?? null)
+      : (personaInfo?.avatarCrop ?? null)
     : null;
   const avatarCropStyle = expressionAvatarUrl
     ? {}
@@ -3254,7 +3278,7 @@ export const ChatMessage = memo(function ChatMessage({
                 </div>
               )}
               {(showActions || showMessageNumbers) && messageIndex != null && (
-                <span className="mt-1 text-[0.5625rem] font-medium text-[var(--muted-foreground)] select-none">
+                <span className="mt-1 text-[0.5625rem] font-medium text-[var(--marinara-chat-chrome-text)] select-none">
                   #{messageIndex}
                 </span>
               )}
@@ -3300,7 +3324,9 @@ export const ChatMessage = memo(function ChatMessage({
                 {(showRoleplayAvatarPanel || hideRoleplayAvatars) &&
                   (showActions || showMessageNumbers) &&
                   messageIndex != null && (
-                    <span className="text-[0.5625rem] font-medium text-white/25 select-none">#{messageIndex}</span>
+                    <span className="text-[0.5625rem] font-medium text-[var(--marinara-chat-chrome-text)] select-none">
+                      #{messageIndex}
+                    </span>
                   )}
               </div>
             )}
@@ -3465,7 +3491,7 @@ export const ChatMessage = memo(function ChatMessage({
                           value1: att.filename || att.name || localizeUi("ui.ui.spritegenerationmodal.image"),
                         })}
                       >
-                        <img
+                        <ChatImagePreview
                           src={att.url || att.data}
                           alt={att.filename || att.name || "image"}
                           className="max-h-[70vh] max-w-full rounded-lg object-contain sm:max-h-[32rem]"
@@ -3516,24 +3542,20 @@ export const ChatMessage = memo(function ChatMessage({
             {/* Swipes */}
             {(hasSwipes || canCreateNextSwipe) && (
               <SwipeJumpControl
+                alwaysShow={alwaysDisplaySwipeMenu && !isUser}
                 messageId={message.id}
                 activeSwipeIndex={message.activeSwipeIndex}
                 swipeCount={swipeCount}
                 onSetActiveSwipe={handleSetActiveSwipe}
                 onCreateNextSwipe={canCreateNextSwipe ? () => onRegenerate?.(message.id) : undefined}
-                className="px-1 text-[0.75rem] text-white/40"
-                buttonClassName="rounded-md p-[0.25em] transition-colors hover:bg-white/10 disabled:opacity-30"
-                inputClassName="border-white/10 bg-white/5 text-white/70 [color-scheme:dark]"
-                iconSize={MESSAGE_SWIPE_ICON_SIZE}
               />
             )}
 
             {/* Hover actions (tap to toggle on mobile) */}
             <div
               className={cn(
-                "mari-message-actions flex items-center gap-0.5 px-1 opacity-0 transition-all group-hover:opacity-100",
-                isUser && "flex-row-reverse",
-                showActions && "opacity-100",
+                "mari-message-actions flex w-full min-w-0 flex-wrap items-center justify-between gap-1 px-1 opacity-0 transition-all group-hover:opacity-100 md:gap-x-2",
+                (showActions || editing) && "opacity-100",
                 showStreamingThinkingAction &&
                   "opacity-100 [&>button:not([data-message-thinking-action])]:hidden [&>div]:hidden",
               )}
@@ -3646,7 +3668,7 @@ export const ChatMessage = memo(function ChatMessage({
               />
               {ttsEnabled && (
                 <>
-                  {isSpeakingThis && !isLoadingThis && (
+                  {isSpeakingThis && (ttsState === "playing" || ttsState === "paused") && (
                     <>
                       <ActionBtn
                         icon={
@@ -3803,7 +3825,7 @@ export const ChatMessage = memo(function ChatMessage({
               </div>
             )}
             {(showActions || showMessageNumbers) && messageIndex != null && (
-              <span className="mt-0.5 text-[0.5rem] font-medium text-[var(--muted-foreground)] select-none">
+              <span className="mt-0.5 text-[0.5rem] font-medium text-[var(--marinara-chat-chrome-text)] select-none">
                 #{messageIndex}
               </span>
             )}
@@ -3933,7 +3955,7 @@ export const ChatMessage = memo(function ChatMessage({
                         value1: att.filename || att.name || localizeUi("ui.ui.spritegenerationmodal.image"),
                       })}
                     >
-                      <img
+                      <ChatImagePreview
                         src={att.url || att.data}
                         alt={att.filename || att.name || "image"}
                         className="max-h-[70vh] max-w-full rounded-lg object-contain sm:max-h-[32rem]"
@@ -3993,23 +4015,20 @@ export const ChatMessage = memo(function ChatMessage({
           {/* Swipes */}
           {(hasSwipes || canCreateNextSwipe) && (
             <SwipeJumpControl
+              alwaysShow={alwaysDisplaySwipeMenu && !isUser}
               messageId={message.id}
               activeSwipeIndex={message.activeSwipeIndex}
               swipeCount={swipeCount}
               onSetActiveSwipe={handleSetActiveSwipe}
               onCreateNextSwipe={canCreateNextSwipe ? () => onRegenerate?.(message.id) : undefined}
-              className="px-2 text-[0.75rem] text-[var(--muted-foreground)]"
-              buttonClassName="rounded p-[0.25em] transition-colors hover:bg-[var(--accent)] disabled:opacity-30"
-              iconSize={MESSAGE_SWIPE_ICON_SIZE}
             />
           )}
 
           {/* Hover actions (tap to toggle on mobile) */}
           <div
             className={cn(
-              "mari-message-actions flex items-center gap-0 px-1 opacity-0 transition-all group-hover:opacity-100",
-              isUser && "flex-row-reverse",
-              showActions && "opacity-100",
+              "mari-message-actions flex w-full min-w-0 flex-wrap items-center justify-between gap-1 px-1 opacity-0 transition-all group-hover:opacity-100 md:gap-x-2",
+              (showActions || editing) && "opacity-100",
               showStreamingThinkingAction &&
                 "opacity-100 [&>button:not([data-message-thinking-action])]:hidden [&>div]:hidden",
             )}

@@ -1,3 +1,4 @@
+import { UI_VISIBILITY } from "../../../lib/ui-visibility";
 import { useRef, useState, type FocusEvent, type KeyboardEvent } from "react";
 import {
   BarChart3,
@@ -245,26 +246,31 @@ export function TrackerSidebarHeader({
         >
           <TrackerSizeTierIcon sizeProfile={sizeProfile} />
         </button>
-        <button
-          {...getToolbarItemProps("statDisplay")}
-          type="button"
-          onClick={() => onSetStatDisplayMode(gaugesSelected ? "bars" : "gauges")}
-          title={statDisplayTitle}
-          aria-label={statDisplayTitle}
-          className="relative grid h-6 w-[2.875rem] grid-cols-2 items-center overflow-hidden rounded-full border border-[var(--border)] bg-[var(--background)]/30 p-0.5 text-[var(--muted-foreground)] transition-colors hover:border-[var(--foreground)]/20 hover:bg-[var(--accent)]/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--primary)]"
-        >
-          <span
-            className={cn(
-              "absolute inset-y-0.5 w-[1.25rem] rounded-full bg-[var(--foreground)]/12 ring-1 ring-[var(--foreground)]/20 transition-transform duration-150 ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none",
-              gaugesSelected ? "translate-x-[1.375rem]" : "translate-x-0.5",
-            )}
-          />
-          <BarChart3
-            size="0.7rem"
-            className={cn("relative z-10 mx-auto", !gaugesSelected && "text-[var(--foreground)]")}
-          />
-          <Gauge size="0.75rem" className={cn("relative z-10 mx-auto", gaugesSelected && "text-[var(--foreground)]")} />
-        </button>
+        {UI_VISIBILITY.rpgStats && (
+          <button
+            {...getToolbarItemProps("statDisplay")}
+            type="button"
+            onClick={() => onSetStatDisplayMode(gaugesSelected ? "bars" : "gauges")}
+            title={statDisplayTitle}
+            aria-label={statDisplayTitle}
+            className="relative grid h-6 w-[2.875rem] grid-cols-2 items-center overflow-hidden rounded-full border border-[var(--border)] bg-[var(--background)]/30 p-0.5 text-[var(--muted-foreground)] transition-colors hover:border-[var(--foreground)]/20 hover:bg-[var(--accent)]/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--primary)]"
+          >
+            <span
+              className={cn(
+                "absolute inset-y-0.5 w-[1.25rem] rounded-full bg-[var(--foreground)]/12 ring-1 ring-[var(--foreground)]/20 transition-transform duration-150 ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none",
+                gaugesSelected ? "translate-x-[1.375rem]" : "translate-x-0.5",
+              )}
+            />
+            <BarChart3
+              size="0.7rem"
+              className={cn("relative z-10 mx-auto", !gaugesSelected && "text-[var(--foreground)]")}
+            />
+            <Gauge
+              size="0.75rem"
+              className={cn("relative z-10 mx-auto", gaugesSelected && "text-[var(--foreground)]")}
+            />
+          </button>
+        )}
       </div>
       <div
         role="group"

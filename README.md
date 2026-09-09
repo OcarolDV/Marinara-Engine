@@ -1,11 +1,30 @@
 # 🍝 Marinara Engine
 
-<h3 align="center"><b>Fun. Intuitive. Plug-And-Play.</b></h3>
+**Writing, worldbuilding, and roleplay.**
 
-<p align="center">
-  <b>A local, AI-powered chat, roleplay, and game engine</b> built around one idea: <b>you install it, you run it, and it just works. Oh, and don't forget about the part where you have fun! ALSO, HEY, LOOK, IT'S FREE.</b><br/>
-  Created with agentic use in mind, allowing multiple requests at once. Everything is connected. Chat with your characters OOC about your roleplays. Have them create RP scenes for you. All designed with simplicity in mind: we don't want to spend hours on setup, we just want to play.<br/>
-</p>
+This is [OcarolDV's VN-focused UI fork](https://github.com/OcarolDV/Marinara-Engine/tree/main) of [Pasta-Devs/Marinara-Engine](https://github.com/Pasta-Devs/Marinara-Engine). It uses Marinara's existing systems for character development, lorebooks, dialogue, scene experiments, character simulation, and visual-novel assets.
+
+The fork changes how those systems are presented. Marinara's backend and underlying architecture are retained.
+
+## Changes in this fork
+
+- **Focused navigation:** Workspace, Chats, Characters, World & Lore, Assets, and Professor Mari. Connections, presets, personas, agents, and Settings are grouped under Tools.
+- **A simpler Workspace:** Marinara's logo and Mari artwork, a short description, direct conversation and roleplay actions, readable recent-chat rows, and resource links.
+- **Less visual clutter:** fewer nested cards, colored borders, glows, and decorative badges; warmer surfaces and artwork provide color.
+- **Roomier Settings:** the desktop view uses the workspace width, with larger category tabs and simpler sections. Closing Settings returns to the existing session.
+- **Writing and RP remain available:** both Conversation and Roleplay are supported. Game mode, table games such as Poker, Chess, and Uno, combat, RPG HUDs/stats, and schedules are hidden from the normal UI through a [central client visibility policy](packages/client/src/lib/ui-visibility.ts). Their underlying implementations and stored data are retained.
+
+**Professor Mari keeps her capabilities.** Her tools, resource navigation, permissions, background work, and editing pipeline—including Keep/Restore—remain in place. Claude Subscription support, model/provider integrations, characters, lorebooks, memory, agents, and image/asset generation continue to use the existing engine systems.
+
+This is an ongoing UI fork. Some older editor layouts, wording, and optional Extras still reflect upstream Marinara.
+
+![The fork's Workspace with Marinara branding, Mari artwork, recent chats, and authoring resources](docs/screenshots/Writers_Room_Workspace.png)
+
+## Branch and upstream
+
+The current fork UI is on [`main`](https://github.com/OcarolDV/Marinara-Engine/tree/main). The original [Marinara Engine repository](https://github.com/Pasta-Devs/Marinara-Engine) remains the upstream project.
+
+The setup guides and engine reference below are retained from upstream. Their older screenshots, game features, and roadmap describe the full original application. **The linked upstream releases and installers do not include this fork's UI changes.**
 
 ---
 
@@ -16,6 +35,8 @@
 ## Table of Contents
 
 - [🍝 Marinara Engine](#-marinara-engine)
+  - [Changes in this fork](#changes-in-this-fork)
+  - [Branch and upstream](#branch-and-upstream)
   - [Table of Contents](#table-of-contents)
   - [Latest Release](#latest-release)
   - [Roadmap](#roadmap)
@@ -38,7 +59,7 @@
 <a id="screenshots"></a>
 
 <details>
-<summary><h2>Screenshots</h2></summary>
+<summary><h2>Upstream screenshots</h2></summary>
 
 <p align="center">
   <img src="docs/screenshots/Desktop_Roleplay_View.png" width="90%" alt="Roleplay Chat — Desktop" />

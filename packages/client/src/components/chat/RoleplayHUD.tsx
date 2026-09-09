@@ -1,3 +1,4 @@
+import { UI_VISIBILITY, isVisibleCapability } from "../../lib/ui-visibility";
 // ──────────────────────────────────────────────
 // Chat: Roleplay HUD — immersive world-state widgets
 // Each tracker category gets its own mini widget with
@@ -21,7 +22,7 @@ import {
 import { cn } from "../../lib/utils";
 import { api } from "../../lib/api-client";
 import type { AgentFailure } from "../../lib/agent-failures";
-import { TrackerPanelIcon } from "../ui/TrackerPanelIcon";
+import { NotebookText } from "lucide-react";
 import { WorldCalendarIcon } from "../ui/WorldCalendarIcon";
 import { WorldClockIcon, WorldThermometerIcon } from "../ui/WorldStateInstruments";
 import { useGameStateStore } from "../../stores/game-state.store";
@@ -138,6 +139,7 @@ export function RoleplayHUD({
   const { data: installedCapabilities = [] } = useInstalledCapabilityPackages();
   const roleplayTrackerPackages = installedCapabilities.filter(
     (item) =>
+      isVisibleCapability(item.manifest) &&
       item.status === "active" &&
       enabledAgentTypes.has(item.id) &&
       Boolean(item.manifest.entrypoints.client) &&
@@ -169,7 +171,7 @@ export function RoleplayHUD({
   const showInjectionsTab = useUIStore((s) => s.debugMode);
 
   const isTrackerBusy = isAgentProcessing || isStreaming || gameStateRefreshing;
-  const showHudTrackerWidgets = !(trackerPanelEnabled && trackerPanelHideHudWidgets);
+  const showHudTrackerWidgets = UI_VISIBILITY.rpgHud && !(trackerPanelEnabled && trackerPanelHideHudWidgets);
 
   useEffect(() => {
     if (!chatId) return;
@@ -622,14 +624,18 @@ function TrackerPanelToggleButton({ onToggle }: { onToggle: () => void }) {
   const { t: localizeUi } = useUiTranslation();
   return (
     <button
+      type="button"
       data-tracker-panel-toggle="roleplay-hud"
       onClick={onToggle}
-      className={WIDGET}
-      title={localizeUi("ui.chat.trackerpaneltogglebutton.showTrackerPanel")}
-      aria-label={localizeUi("ui.chat.trackerpaneltogglebutton.showTrackerPanel")}
+      className={getChatToolbarButtonClass({
+        sizeClassName: "min-h-11 w-auto shrink-0",
+        className: "gap-2 whitespace-nowrap !px-3",
+      })}
+      title={localizeUi("writersRoom.context")}
+      aria-label={localizeUi("writersRoom.context")}
     >
-      <TrackerPanelIcon size="1.05rem" className="shrink-0" />
-      <span className="sr-only">{localizeUi("ui.panels.trackerpanelappearancedrawer.trackerPanel")}</span>
+      <NotebookText size="1.05rem" className="shrink-0" />
+      <span className="text-xs">{localizeUi("writersRoom.context")}</span>
     </button>
   );
 }
@@ -677,7 +683,7 @@ function ActionsGroup({
 }: ActionsGroupProps) {
   const btnRef = useRef<HTMLButtonElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState<{ top: number; left: number; centered: boolean } | null>(null);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   const echoMessages = useAgentStore((s) => s.echoMessages);
   const { data: customAgentRuns = [], isLoading: customAgentRunsLoading } = useCustomAgentRuns(chatId, agentsOpen);
 
@@ -690,11 +696,12 @@ function ActionsGroup({
     const aboveTop = rect.top - dropdownHeight - 4;
     const preferredTop = belowTop + dropdownHeight > window.innerHeight - 8 ? aboveTop : belowTop;
     const top = Math.max(8, Math.min(preferredTop, window.innerHeight - dropdownHeight - 8));
-    const centered = window.innerWidth < 768;
-    const left = centered
-      ? Math.round(window.innerWidth / 2)
-      : Math.max(8, Math.min(rect.left, window.innerWidth - dropdownWidth - 8));
-    return { top, left, centered };
+    // Center with layout coordinates: the panel's entrance animation owns transform.
+    const left =
+      window.innerWidth < 768
+        ? Math.max(8, Math.round((window.innerWidth - dropdownWidth) / 2))
+        : Math.max(8, Math.min(rect.left, window.innerWidth - dropdownWidth - 8));
+    return { top, left };
   }, []);
 
   // Position with fixed layout to avoid overflow clipping
@@ -759,7 +766,7 @@ function ActionsGroup({
           NEUTRAL_PANEL_SCROLL_AREA,
           "fixed z-[9999] max-h-80 w-72 max-w-[calc(100vw-1rem)] overflow-y-auto",
         )}
-        style={{ top: pos.top, left: pos.left, transform: pos.centered ? "translateX(-50%)" : undefined }}
+        style={{ top: pos.top, left: pos.left }}
       >
         <Suspense fallback={<DeferredActionsFallback isAgentProcessing={isAgentProcessing} />}>
           <RoleplayHUDActionsMenu

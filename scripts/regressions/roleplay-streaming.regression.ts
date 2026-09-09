@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { UI_PERSISTENCE } from "../../packages/client/src/lib/ui-persistence.js";
 import {
   getRoleplayTypewriterRevealCharsPerSecond,
   getStreamingCharsPerSecond,
@@ -466,7 +467,8 @@ assert.match(
   "active Roleplay tracker agents should expose their saved prompt templates",
 );
 assert.match(reducedAmbientEffectsHookSource, /manualPreference \|\| systemPreference/u);
-assert.match(uiStoreSource, /version: 96/u);
+  assert.match(uiStoreSource, /version: UI_PERSISTENCE.version/u);
+  assert.ok(UI_PERSISTENCE.version >= 99, "the Roleplay persistence migration must remain applied");
 assert.match(globalStylesSource, /data-marinara-reduced-effects/u);
 const accentTransitionStyles =
   globalStylesSource.match(
@@ -1145,8 +1147,8 @@ assert.match(
 );
 assert.match(
   chatRoleplaySurfaceSource,
-  /paddingBottom: "var\(--mari-roleplay-content-padding-bottom, 16px\)"/u,
-  "Roleplay transcript padding should consume the imperatively measured composer inset",
+  /paddingBottom:\s*"calc\(var\(--mari-roleplay-content-padding-bottom, 16px\) \+ var\(--mari-message-editor-scroll-space, 0px\)\)"/u,
+  "Roleplay transcript padding should combine the measured composer inset with editor scroll space",
 );
 assert.match(
   chatMessageSource,
@@ -1479,8 +1481,8 @@ const illustrationHandlerSource =
   useGenerateSource.match(/case "illustration": \{[\s\S]*?case "illustration_queued":/u)?.[0] ?? "";
 assert.match(
   illustrationHandlerSource,
-  /if \(!streamingEnabled && !isGameGeneration\) \{[\s\S]*?refreshMessagesAuthoritatively/u,
-  "illustrations should not refresh the visible cache during Game generation",
+  /if \(!isGameGeneration && canRefreshCurrentMessagesNow\(\)\) \{[\s\S]*?refreshMessagesAuthoritatively/u,
+  "illustrations refresh after the live presentation hands off, but never during Game generation",
 );
 assert.match(
   useGenerateSource,

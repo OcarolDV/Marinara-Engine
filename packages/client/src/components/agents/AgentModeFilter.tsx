@@ -1,3 +1,4 @@
+import { isVisibleChatMode } from "../../lib/ui-visibility";
 import type { ChatMode } from "@marinara-engine/shared";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
@@ -23,11 +24,11 @@ export function AgentModeFilter({
   const { t } = useTranslation();
   return (
     <div
-      className={cn("grid grid-cols-4 gap-1", className)}
+      className={cn("grid grid-cols-3 gap-1", className)}
       role="group"
       aria-label={t("ui.agents.agentcatalogview.filterByChatMode")}
     >
-      {MODE_FILTERS.map(([mode, labelKey]) => (
+      {MODE_FILTERS.filter(([mode]) => mode === "all" || isVisibleChatMode(mode)).map(([mode, labelKey]) => (
         <button
           key={mode}
           type="button"

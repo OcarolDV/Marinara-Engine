@@ -28,7 +28,7 @@ import {
   type GameAssetEntry,
   type GameAssetManifest,
 } from "../../hooks/use-game-assets";
-import { cleanNpcAvatarDisplayName, isSameNpcAvatarResource, normalizeNpcAvatarName } from "../../lib/game-npc-avatar";
+import { cleanNpcAvatarDisplayName, normalizeNpcAvatarName } from "../../lib/game-npc-avatar";
 import { useChatStore } from "../../stores/chat.store";
 import { useUIStore } from "../../stores/ui.store";
 import { useGameStateStore } from "../../stores/game-state.store";
@@ -68,6 +68,7 @@ import {
 } from "../../hooks/use-game-storyboards";
 import {
   chatKeys,
+  guardServerChatSnapshot,
   useBranchChat,
   useCreateMessage,
   useDeleteChat,
@@ -613,11 +614,6 @@ type SceneAssetPresentCharacter = {
   appearance?: string | null;
   avatarPath?: string | null;
   avatarCrop?: AvatarCrop | null;
-};
-
-type SpeakingLibraryCharacter = {
-  character: GameSurfaceProps["characters"][number];
-  aliases: string[];
 };
 
 type GamePartyMemberInfo = {
@@ -1203,22 +1199,6 @@ function extractGameDialogueSpeakerNames(content: string): string[] {
     while ((match = pattern.exec(content)) !== null) {
       const name = match[1]?.trim();
       if (name && !name.includes(":")) names.add(name);
-    }
-  }
-
-  return [...names];
-}
-
-function extractRecentGameDialogueSpeakerNames(messages: Message[], maxAssistantMessages = 30): string[] {
-  const names = new Set<string>();
-  let assistantMessagesSeen = 0;
-
-  for (let i = messages.length - 1; i >= 0 && assistantMessagesSeen < maxAssistantMessages; i--) {
-    const message = messages[i];
-    if (!message || (message.role !== "assistant" && message.role !== "narrator")) continue;
-    assistantMessagesSeen++;
-    for (const name of extractGameDialogueSpeakerNames(message.content)) {
-      names.add(name);
     }
   }
 
@@ -2285,7 +2265,7 @@ function GameSurfaceComponent({
   messages,
   isStreaming,
   characterMap,
-  characters,
+  characters: libraryCharacters,
   personaInfo,
   chatBackground,
   connectedChatName,
@@ -2415,6 +2395,17 @@ function GameSurfaceComponent({
   const chatCharacterIds = useMemo(
     () => getChatCharacterIds(chat.characterIds).filter((id) => id !== PROFESSOR_MARI_ID),
     [chat.characterIds],
+  );
+  const gameCharacterIds = useMemo(() => {
+    const config = chatMeta.gameSetupConfig as Record<string, unknown> | undefined;
+    const ids = new Set([...chatCharacterIds, ...getActivePartyIds(chatMeta)]);
+    if (typeof config?.gmCharacterId === "string") ids.add(config.gmCharacterId);
+    return [...ids].filter((id) => characterMap.has(id));
+  }, [characterMap, chatCharacterIds, chatMeta]);
+  // An unrelated library card with the same name is not a character in this game.
+  const characters = useMemo(
+    () => libraryCharacters.filter((character) => gameCharacterIds.includes(character.id)),
+    [gameCharacterIds, libraryCharacters],
   );
   const gameMusicDjEnabled =
     chatMeta.gameUseMusicDj === true ||
@@ -3199,6 +3190,16 @@ function GameSurfaceComponent({
   const gameAssetsPanelRef = useRef<HTMLDivElement>(null);
   const mobileGameAssetsPanelRef = useRef<HTMLDivElement>(null);
   const hudSurfaceRef = useRef<HTMLDivElement>(null);
+  // The surface is also tracked in state so the widget-layout effect below can
+  // depend on it. GameSurface renders a messages-loading branch that mounts no
+  // surface at all, and the widget state hydrates from chat metadata while that
+  // branch is up — measuring then finds no element, attaches no ResizeObserver,
+  // and nothing re-measures once the real surface arrives.
+  const [hudSurfaceEl, setHudSurfaceEl] = useState<HTMLDivElement | null>(null);
+  const attachHudSurface = useCallback((node: HTMLDivElement | null) => {
+    hudSurfaceRef.current = node;
+    setHudSurfaceEl(node);
+  }, []);
   const compactHudWidgetsRef = useRef(compactHudWidgets);
   const compactHudReleaseWidthRef = useRef<number | null>(null);
   const lastProcessedMsgRef = useRef<string | null>(null);
@@ -3605,23 +3606,6 @@ function GameSurfaceComponent({
     }
   }, [assetManifest, chatMeta.gameSceneBackground, scopedAssetMap, useMusicDjPlayerMusic]);
 
-  const gameCharacterIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const id of chatCharacterIds) {
-      if (characterMap.has(id)) ids.add(id);
-    }
-
-    const config = chatMeta.gameSetupConfig as Record<string, unknown> | undefined;
-    const gmCharacterId = typeof config?.gmCharacterId === "string" ? config.gmCharacterId : null;
-    if (gmCharacterId && characterMap.has(gmCharacterId)) ids.add(gmCharacterId);
-
-    for (const id of getActivePartyIds(chatMeta)) {
-      if (characterMap.has(id)) ids.add(id);
-    }
-
-    return [...ids];
-  }, [characterMap, chatCharacterIds, chatMeta]);
-
   // Fetch sprites for active game characters only. The full library is deliberately
   // not used here because a same-named character card can masquerade as the player.
   const characterIds = gameCharacterIds;
@@ -3642,21 +3626,12 @@ function GameSurfaceComponent({
     })),
   });
 
-  const spriteSpeakerMessages = replayActive ? replaySpriteMessages : messages;
-  const recentSpriteSpeakerNames = useMemo(
-    () => extractRecentGameDialogueSpeakerNames(spriteSpeakerMessages),
-    [spriteSpeakerMessages],
-  );
-
   useEffect(() => {
     const avatarPatches: Array<{ name: string; avatarUrl: string }> = [];
     for (const npc of npcs) {
       if (!npc.name) continue;
       const libraryCharacter = findNamedEntry(characters, npc.name, (character) => character.name);
-      if (
-        libraryCharacter?.avatarUrl &&
-        (!npc.avatarUrl || !isSameNpcAvatarResource(libraryCharacter.avatarUrl, npc.avatarUrl))
-      ) {
+      if (libraryCharacter?.avatarUrl && !npc.avatarUrl) {
         avatarPatches.push({ name: npc.name, avatarUrl: libraryCharacter.avatarUrl });
       }
     }
@@ -3664,52 +3639,6 @@ function GameSurfaceComponent({
       useGameModeStore.getState().patchNpcAvatars(avatarPatches);
     }
   }, [characters, npcs]);
-
-  const speakingLibraryCharacters = useMemo(() => {
-    const speakerNames = new Set<string>();
-    if (activeSpeaker?.name) speakerNames.add(activeSpeaker.name);
-    for (const name of recentSpriteSpeakerNames) {
-      speakerNames.add(name);
-    }
-    for (const line of partyDialogue) {
-      if (line.character.trim()) speakerNames.add(line.character.trim());
-    }
-
-    const inGameCharacterIds = new Set(characterIds);
-    const matched = new Map<string, SpeakingLibraryCharacter>();
-    const playerSpeakerName = personaInfo?.name ? normalizeSceneAssetName(personaInfo.name) : "";
-    for (const speakerName of speakerNames) {
-      if (playerSpeakerName && normalizeSceneAssetName(speakerName) === playerSpeakerName) continue;
-      const character = findNamedEntry(characters, speakerName, (entry) => entry.name);
-      if (!character || inGameCharacterIds.has(character.id) || character.id === personaSpriteId) continue;
-      const existing = matched.get(character.id);
-      if (existing) {
-        if (!existing.aliases.some((alias) => characterNamesMatch(alias, speakerName))) {
-          existing.aliases.push(speakerName);
-        }
-        continue;
-      }
-      matched.set(character.id, { character, aliases: [speakerName] });
-    }
-    return [...matched.values()];
-  }, [
-    activeSpeaker?.name,
-    characterIds,
-    characters,
-    partyDialogue,
-    personaInfo?.name,
-    personaSpriteId,
-    recentSpriteSpeakerNames,
-  ]);
-
-  const librarySpriteQueries = useQueries({
-    queries: speakingLibraryCharacters.map((entry) => ({
-      queryKey: spriteKeys.list(entry.character.id),
-      queryFn: () => api.get<SpriteInfo[]>(`/sprites/${entry.character.id}`),
-      enabled: !!entry.character.id,
-      staleTime: 5 * 60 * 1000,
-    })),
-  });
 
   const personaSpriteQuery = useQuery({
     queryKey: spriteKeys.list(personaSpriteId ?? ""),
@@ -3728,29 +3657,12 @@ function GameSurfaceComponent({
         map.set(normalizeTextForMatch(charInfo.name), data);
       }
     });
-    speakingLibraryCharacters.forEach((entry, i) => {
-      const data = librarySpriteQueries[i]?.data;
-      if (data?.length) {
-        map.set(normalizeTextForMatch(entry.character.name), data);
-        for (const alias of entry.aliases) {
-          map.set(normalizeTextForMatch(alias), data);
-        }
-      }
-    });
     // Add persona sprites if available
     if (personaInfo?.name && personaSpriteQuery.data?.length) {
       map.set(normalizeTextForMatch(personaInfo.name), personaSpriteQuery.data);
     }
     return map;
-  }, [
-    characterIds,
-    characterMap,
-    librarySpriteQueries,
-    personaInfo,
-    speakingLibraryCharacters,
-    personaSpriteQuery.data,
-    spriteQueries,
-  ]);
+  }, [characterIds, characterMap, personaInfo, personaSpriteQuery.data, spriteQueries]);
 
   // Speaker-avatar seam: an experience whose cast has no engine character cards pushes a name→url map
   // here, so its speakers still get an avatar in the narration.
@@ -3818,20 +3730,8 @@ function GameSurfaceComponent({
         dialogueColor?: string;
       }
     >();
-    for (const entry of speakingLibraryCharacters) {
-      const fromMap = characterMap.get(entry.character.id);
-      const avatarInfo = {
-        url: entry.character.avatarUrl ?? "",
-        crop: entry.character.avatarCrop,
-        nameColor: entry.character.nameColor ?? fromMap?.nameColor,
-        dialogueColor: entry.character.dialogueColor ?? fromMap?.dialogueColor,
-      };
-      map.set(normalizeTextForMatch(entry.character.name), avatarInfo);
-      for (const alias of entry.aliases) {
-        map.set(normalizeTextForMatch(alias), avatarInfo);
-      }
-    }
-    // Real library cards (added above) win; the player name is handled via personaInfo.
+    // Selected cards are resolved by characterIds; never borrow an unrelated card by name.
+    // Experiences can still supply their own cast portraits, excluding the player persona.
     const extra = activeExperienceAvatars?.speakerAvatars;
     if (extra?.size) {
       const playerKey = personaInfo?.name ? normalizeTextForMatch(personaInfo.name) : "";
@@ -3841,7 +3741,7 @@ function GameSurfaceComponent({
       }
     }
     return map;
-  }, [characterMap, speakingLibraryCharacters, activeExperienceAvatars, personaInfo?.name]);
+  }, [activeExperienceAvatars, personaInfo?.name]);
 
   // Fallback avatar for the player persona when it has none, so the player's dialogue shows one too.
   const effectivePersonaInfo = useMemo(() => {
@@ -3876,19 +3776,10 @@ function GameSurfaceComponent({
       return character ? ([[id, character]] as Array<[string, NonNullable<ReturnType<typeof characterMap.get>>]>) : [];
     });
     const entry = findNamedEntry(activeCharacterEntries, fullBodyTarget.name, ([, character]) => character.name);
-    const libraryEntry = entry
-      ? null
-      : findNamedEntry(speakingLibraryCharacters, fullBodyTarget.name, (candidate) =>
-          [candidate.character.name, ...candidate.aliases].join(" "),
-        );
-    const characterId = entry?.[0] ?? libraryEntry?.character.id;
+    const characterId = entry?.[0];
     if (!characterId) return null;
 
-    const characterIndex = entry ? characterIds.indexOf(entry[0]) : -1;
-    const libraryIndex = libraryEntry
-      ? speakingLibraryCharacters.findIndex((candidate) => candidate.character.id === libraryEntry.character.id)
-      : -1;
-    const sprites = entry ? spriteQueries[characterIndex]?.data : librarySpriteQueries[libraryIndex]?.data;
+    const sprites = spriteQueries[characterIds.indexOf(characterId)]?.data;
     const pose =
       fullBodyTarget.mode === "combat"
         ? resolveCombatFullBodyPose(fullBodyTarget.token, sprites)
@@ -3903,11 +3794,9 @@ function GameSurfaceComponent({
     characterIds,
     characterMap,
     fullBodyTarget,
-    librarySpriteQueries,
     personaInfo?.name,
     personaSpriteId,
     personaSpriteQuery.data,
-    speakingLibraryCharacters,
     spriteQueries,
   ]);
 
@@ -7249,9 +7138,16 @@ function GameSurfaceComponent({
       const targetChatId = responseChat?.id ?? bodyChatId;
 
       if (responseChat) {
-        queryClient.setQueryData(chatKeys.detail(responseChat.id), responseChat);
+        // Version 0 = maximally conservative (#5641): this callback consumes
+        // a response whose request was issued by the shared JSON-repair flow,
+        // so there is no pre-request version snapshot to compare against.
+        // Locally-edited metadata fields keep their cached values here; the
+        // detail invalidation just below reconciles everything to server
+        // truth immediately after.
+        const guardedChat = guardServerChatSnapshot(queryClient, responseChat, 0);
+        queryClient.setQueryData(chatKeys.detail(responseChat.id), guardedChat);
         if (useChatStore.getState().activeChatId === responseChat.id) {
-          useChatStore.getState().setActiveChat(responseChat);
+          useChatStore.getState().setActiveChat(guardedChat);
         }
       }
       if (targetChatId) {
@@ -10516,9 +10412,16 @@ function GameSurfaceComponent({
 
   useEffect(() => {
     if (combatUiActive || normalizedWidgets.length === 0) {
-      compactHudWidgetsRef.current = false;
+      // Reset to the same width heuristic the state initializes with, NOT a
+      // flat false: widgets arrive after the queries resolve, and a false
+      // reset here mounts the (CSS-hidden) desktop widget rail on mobile for
+      // the frames until updateWidgetLayout measures — long enough on a slow
+      // device for both the mobile and desktop copies of a widget to coexist
+      // in the DOM (#5618).
+      const compactByWidth = typeof window !== "undefined" && window.innerWidth < 768;
+      compactHudWidgetsRef.current = compactByWidth;
       compactHudReleaseWidthRef.current = null;
-      setCompactHudWidgets(false);
+      setCompactHudWidgets(compactByWidth);
       return;
     }
 
@@ -10592,7 +10495,13 @@ function GameSurfaceComponent({
       resizeObserver?.disconnect();
       window.removeEventListener("resize", scheduleWidgetLayoutUpdate);
     };
-  }, [combatUiActive, normalizedWidgets.length]);
+    // hudSurfaceEl is a dependency so the measurement and the ResizeObserver are
+    // re-established when the surface mounts. Without it, widgets that hydrate
+    // while the messages-loading branch is showing leave the layout unmeasured
+    // with no observer attached, so every compact decision that depends on the
+    // overlap estimate rather than the width shortcut above stays wrong until a
+    // window resize happens to run the measurement again (#5654).
+  }, [combatUiActive, hudSurfaceEl, normalizedWidgets.length]);
 
   const effectiveBackgroundTag = replayActive ? replayBackgroundTag : currentBackground;
 
@@ -10717,7 +10626,10 @@ function GameSurfaceComponent({
   if (isMessagesLoading && !needsCreation && sessionStatus !== "setup" && !isSetupActive) {
     return (
       <>
-        <div className="flex h-full items-center justify-center bg-[var(--background)] dark:bg-black/80">
+        <div
+          data-component="GameSurface.MessagesLoading"
+          className="flex h-full items-center justify-center bg-[var(--background)] dark:bg-black/80"
+        >
           <div className="h-6 w-6 animate-spin rounded-full border-2 border-[var(--muted)]/40 border-t-[var(--foreground)]/70 dark:border-white/20 dark:border-t-white/70" />
         </div>
         {imagePromptReviewModal}
@@ -12130,7 +12042,7 @@ function GameSurfaceComponent({
 
               {/* Main content area */}
               <div
-                ref={hudSurfaceRef}
+                ref={attachHudSurface}
                 data-chat-resource-drop-surface
                 className={cn("relative flex min-h-0 flex-1 flex-col overflow-hidden", experienceSurfaceClass)}
               >

@@ -122,6 +122,8 @@ export function resolveChoiceVariableValue(input: {
 
 /** Everything the assembler needs to produce a prompt. */
 export interface AssemblerInput {
+  /** Generation routes format messages after audience filtering and context fitting. */
+  deferMessagePostProcessing?: boolean;
   db: DB;
   /** The prompt preset to use */
   preset: {
@@ -180,6 +182,8 @@ export interface AssemblerInput {
   /** Chat context */
   chatId: string;
   characterIds: string[];
+  /** Character IDs used only for lorebook matching, including a character-backed user identity. */
+  lorebookCharacterIds?: string[];
   /** Full active roster when characterIds is narrowed to one generation target. */
   groupCharacterIds?: string[];
   personaId?: string | null;
@@ -519,6 +523,7 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
     db: input.db,
     chatId: input.chatId,
     characterIds: input.characterIds,
+    lorebookCharacterIds: input.lorebookCharacterIds,
     personaId: input.personaId ?? null,
     personaName: input.personaName,
     personaDescription: input.personaDescription,
@@ -688,7 +693,8 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
   }
 
   // ── Phase 3: Adjacent same-role merging ──
-  let finalMessages = mergeAdjacentMessages(messages);
+  let finalMessages =
+    input.deferMessagePostProcessing || !parameters.strictRoleFormatting ? messages : mergeAdjacentMessages(messages);
 
   // ── Phase 4: Squash leading system messages if enabled ──
   if (parameters.squashSystemMessages) {
@@ -741,7 +747,7 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
   // ── Phase 6: Strict role formatting ──
   // Keeps explicit section roles while folding system blocks to the front and
   // merging adjacent same-role messages.
-  if (parameters.strictRoleFormatting) {
+  if (parameters.strictRoleFormatting && !input.deferMessagePostProcessing) {
     finalMessages = enforceStrictRoles(finalMessages);
   }
 
@@ -760,7 +766,7 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
 
   // ── Phase 8: Single user message mode ──
   // Collapses entire prompt into one user message.
-  if (parameters.singleUserMessage) {
+  if (parameters.singleUserMessage && !input.deferMessagePostProcessing) {
     const combined = finalMessages
       .map((m) => {
         if (m.role !== "user") return `[${m.role.toUpperCase()}]\n${m.content}`;
@@ -1097,7 +1103,13 @@ function enforceStrictRoles(messages: ChatMLMessage[]): ChatMLMessage[] {
 
     const prev = result[result.length - 1];
     const sameCharacter = (prev?.characterId ?? null) === (msg.characterId ?? null);
-    if (prev && prev.role === msg.role && sameCharacter && hasSamePromptAudience(prev, msg)) {
+    if (
+      prev &&
+      prev.role === msg.role &&
+      sameCharacter &&
+      hasSamePromptAudience(prev, msg) &&
+      !(msg.role === "assistant" && (prev.providerMetadata || msg.providerMetadata))
+    ) {
       mergeInto(prev, msg);
     } else {
       result.push({ ...msg });

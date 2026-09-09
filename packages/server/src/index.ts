@@ -6,6 +6,9 @@ import { fileURLToPath } from "url";
 import { buildApp } from "./app.js";
 import { StorageWriterLeaseError } from "./db/file-backed-store.js";
 import { logger } from "./lib/logger.js";
+import { startFreezeDetector, stopFreezeDetector } from "./lib/freeze-detector.js";
+import { finalizeSessionExit, noteSessionExitKind, startSessionPostmortem } from "./lib/session-postmortem.js";
+import { armShutdownDeadline } from "./lib/shutdown-deadline.js";
 import { getHost, getPort, getServerProtocol, loadTlsOptions, logStorageDiagnostics } from "./config/runtime-config.js";
 import { logCsrfTrustSummary } from "./middleware/csrf-protection.js";
 import { startEnvWatcher } from "./config/env-watcher.js";
@@ -64,13 +67,22 @@ async function main() {
   };
 
   process.once("exit", reapSidecar);
+  // #5506 diagnostics: stamp how this session ended. Every deliberate ending
+  // reaches process "exit" (signal shutdown, in-app update, Advanced Settings
+  // restart, a fatal crash); an external SIGKILL reaches nothing, which is
+  // precisely the signal the postmortem reports at the next startup.
+  process.once("exit", (code) => {
+    finalizeSessionExit(code);
+  });
   process.on("uncaughtException", (err) => {
     logFatalProcessError(err, "[process] Uncaught exception; reaping sidecar before exit");
+    noteSessionExitKind("crash");
     reapSidecar();
     process.exit(1);
   });
   process.on("unhandledRejection", (reason) => {
     logFatalProcessError(reason, "[process] Unhandled rejection; reaping sidecar before exit");
+    noteSessionExitKind("crash");
     reapSidecar();
     process.exit(1);
   });
@@ -83,10 +95,15 @@ async function main() {
 
     isShuttingDown = true;
     logger.info("Received %s; shutting down Marinara Engine", signal);
+    // #5838: bound the whole close - sever connections at 4 s, force-exit at
+    // 8 s - so a supervisor's stop window (earlyoom ~10 s, Docker 10 s) never
+    // expires on a connection-wait and escalates to a write-dropping SIGKILL.
+    armShutdownDeadline(app, signal);
 
     try {
       envWatcher.stop();
       stopRuntimeMemoryMonitor();
+      stopFreezeDetector();
       await app.close();
       logger.info("Shutdown complete");
       process.exit(0);
@@ -106,6 +123,8 @@ async function main() {
   try {
     await app.listen({ port, host });
     logger.info(`Marinara Engine server listening on ${protocol}://${host}:${port}`);
+    startFreezeDetector();
+    startSessionPostmortem();
     stopRuntimeMemoryMonitor = startRuntimeMemoryMonitor();
     logCsrfTrustSummary();
     scheduleTaskbarShortcutMigration();

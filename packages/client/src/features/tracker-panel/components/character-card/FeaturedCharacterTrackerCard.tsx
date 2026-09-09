@@ -1,3 +1,4 @@
+import { UI_VISIBILITY } from "../../../../lib/ui-visibility";
 import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import {
@@ -149,7 +150,7 @@ export function FeaturedCharacterTrackerCard({
   const customFields = Object.entries((character.customFields ?? {}) as Record<string, unknown>).map(
     ([name, value]) => [name, value, trackerEditableText(value)] as const,
   );
-  const characterStats = Array.isArray(character.stats) ? character.stats : [];
+  const characterStats = UI_VISIBILITY.rpgStats && Array.isArray(character.stats) ? character.stats : [];
   const featuredStatColumnHeightRem =
     trackerPanelSizeProfile === "expanded"
       ? TRACKER_PROFILE_PORTRAIT_ROOMY_MEDIA_STAGE_REM
@@ -176,7 +177,7 @@ export function FeaturedCharacterTrackerCard({
     if (nextHidden) onUpdate({ ...character, thoughts: null });
   };
   const hasThoughtsControl = !thoughtsHidden || hideMode;
-  const hasCharacterStatBlock = characterStats.length > 0 || addMode;
+  const hasCharacterStatBlock = UI_VISIBILITY.rpgStats && (characterStats.length > 0 || addMode);
   const renderCharacterGauges = shouldRenderStatGauges(statDisplayMode, addMode, deleteMode, lockMode);
   const featuredPortraitSide = getTrackerProfilePortraitSide(trackerPanelSide);
   const featuredDetailsSide = getOppositeTrackerProfileSide(featuredPortraitSide);

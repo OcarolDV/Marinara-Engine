@@ -1,7 +1,7 @@
 // ──────────────────────────────────────────────
 // React Query: Chat hooks
 // ──────────────────────────────────────────────
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import {
   useQuery,
   useInfiniteQuery,
@@ -11,7 +11,7 @@ import {
   type QueryClient,
 } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { api, ApiError } from "../lib/api-client";
+import { api, ApiError, isRequestTimeoutError, requestTimeoutSignal } from "../lib/api-client";
 import { useChatStore } from "../stores/chat.store";
 import { useAgentStore } from "../stores/agent.store";
 import { useGameStateStore } from "../stores/game-state.store";
@@ -20,6 +20,7 @@ import { useUIStore } from "../stores/ui.store";
 import { clearBrowserRuntimeCaches } from "../lib/browser-runtime";
 import { shouldRefetchMessagesOnReconnect } from "../lib/message-page-cache";
 import { normalizeHydratedMessage } from "../lib/message-hydration";
+import { trackChatMetadataSave, waitForPendingChatMetadataSaves } from "../lib/chat-metadata-save-barrier";
 import { isMessageHidden } from "../lib/message-visibility";
 import { copyLocalSpriteVisualSettings } from "../components/chat/local-sprite-visual-settings";
 import { lorebookKeys } from "./use-lorebooks";
@@ -248,13 +249,22 @@ export function useChats(options: { enabled?: boolean; refetchOnMount?: boolean 
   });
 }
 
+// A frozen host accepts the TCP connection but never answers, so without a
+// deadline the chat-open fetch pends forever and the "Opening chat..." spinner
+// never resolves to an error state (#5657).
+const CHAT_OPEN_TIMEOUT_MS = 15_000;
+
 export function useChat(id: string | null) {
   return useQuery({
     queryKey: chatKeys.detail(id ?? ""),
-    queryFn: () => api.get<Chat>(`/chats/${id}`),
+    queryFn: ({ signal }) =>
+      api.get<Chat>(`/chats/${id}`, { signal: requestTimeoutSignal(CHAT_OPEN_TIMEOUT_MS, signal) }),
     enabled: !!id,
     staleTime: 60_000,
     retry: (failureCount, error) => {
+      // A timeout means the server is unreachable/frozen; retrying just multiplies
+      // the wait before the explicit unreachable state can render.
+      if (isRequestTimeoutError(error)) return false;
       const status = error instanceof ApiError ? error.status : 0;
       if (status >= 400 && status < 500 && status !== 408 && status !== 429) return false;
       return failureCount < 3;
@@ -262,8 +272,71 @@ export function useChat(id: string | null) {
   });
 }
 
+export function useGenerationStatus(chatId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: ["generation-status", chatId ?? ""],
+    queryFn: ({ signal }) =>
+      api.get<{ active: boolean }>(`/generate/status/${encodeURIComponent(chatId ?? "")}`, { signal }),
+    enabled: !!chatId && enabled,
+    staleTime: 0,
+    refetchInterval: (query) => (query.state.data?.active ? 1_000 : false),
+  });
+}
+
+function hasLocalGeneration(state: ReturnType<typeof useChatStore.getState>, chatId: string) {
+  return (
+    state.abortControllers.has(chatId) ||
+    (state.isStreaming && state.streamingChatId === chatId) ||
+    state.backgroundIllustrationChatIds.has(chatId)
+  );
+}
+
 export function useChatMessages(chatId: string | null, pageSize: number = 0, enabled = true) {
-  return useInfiniteQuery({
+  const queryClient = useQueryClient();
+  const previousWindow = useRef({ chatId, pageSize });
+  const orphanedGeneration = useRef<string | null>(null);
+  const localAgentsProcessing = useAgentStore((state) => !!chatId && state.processingChatIds.includes(chatId));
+  const canRecover = useChatStore(
+    (state) => !!chatId && state.activeChatId === chatId && !hasLocalGeneration(state, chatId),
+  );
+  const { data: generationStatus, isFetching: checkingGeneration } = useGenerationStatus(
+    chatId,
+    enabled && canRecover && !localAgentsProcessing,
+  );
+  useEffect(() => {
+    const state = useChatStore.getState();
+    if (
+      !chatId ||
+      !enabled ||
+      state.activeChatId !== chatId ||
+      hasLocalGeneration(state, chatId) ||
+      useAgentStore.getState().processingChatIds.includes(chatId)
+    ) {
+      orphanedGeneration.current = null;
+      return;
+    }
+    if (orphanedGeneration.current !== chatId) orphanedGeneration.current = null;
+    // Re-enabling the query must not adopt a cached active status from before
+    // a local stream took ownership. Wait for the fresh server response.
+    if (checkingGeneration) return;
+    if (generationStatus?.active) {
+      orphanedGeneration.current = chatId;
+    } else if (generationStatus?.active === false && orphanedGeneration.current === chatId) {
+      orphanedGeneration.current = null;
+      // A fresh browser has no surviving SSE callback. Refresh saved rows once
+      // that server work finishes, but leave live local streams/typewriters alone.
+      for (const queryKey of [
+        chatKeys.messages(chatId),
+        chatKeys.messageCount(chatId),
+        chatKeys.messagePeek(chatId),
+        chatKeys.detail(chatId),
+        ["gallery", chatId],
+      ]) {
+        void queryClient.invalidateQueries({ queryKey });
+      }
+    }
+  }, [chatId, enabled, canRecover, localAgentsProcessing, checkingGeneration, generationStatus?.active, queryClient]);
+  const query = useInfiniteQuery({
     queryKey: chatKeys.messages(chatId ?? ""),
     queryFn: ({ pageParam, signal }) => {
       const params = new URLSearchParams();
@@ -291,6 +364,20 @@ export function useChatMessages(chatId: string | null, pageSize: number = 0, ena
     // the post-generation refresh, and explicit invalidations.
     refetchOnReconnect: (query) => shouldRefetchMessagesOnReconnect(query.state.data?.pages.length ?? 0),
   });
+  useEffect(() => {
+    const previous = previousWindow.current;
+    if (!chatId || previous.chatId !== chatId) {
+      previousWindow.current = { chatId, pageSize };
+      return;
+    }
+    if (!enabled) return;
+    previousWindow.current = { chatId, pageSize };
+    if (previous.pageSize === pageSize) return;
+    // Run after the query observer adopts the new size. The shared key excludes
+    // it, so restart from the newest cursor instead of retaining a truncated page.
+    void queryClient.resetQueries({ queryKey: chatKeys.messages(chatId), exact: true });
+  }, [chatId, enabled, pageSize, queryClient]);
+  return query;
 }
 
 /**
@@ -521,6 +608,40 @@ function mergeMetadataForVersion(
   return next as Chat["metadata"];
 }
 
+/**
+ * Version snapshot to take BEFORE issuing a request whose response will be
+ * written back through {@link guardServerChatSnapshot}: any metadata field
+ * the user edits after this moment outranks that response.
+ */
+export function captureChatMetadataVersion(chatId: string) {
+  return chatMetadataMutationVersions.get(chatId) ?? 0;
+}
+
+/**
+ * Prepare a SERVER SNAPSHOT for a cache write without letting it revert
+ * newer local metadata edits (#5641). The per-field version guard used to
+ * live only inside useUpdateChatMetadata; every other mutation wrote its
+ * response chat back raw, so a response produced before a metadata PATCH but
+ * consumed after it replaced the whole chat — momentarily (or, with no
+ * refetch pending, until reload) flipping recently-edited fields back and
+ * unmounting the settings sections they gate. Non-metadata fields stay
+ * server-authoritative, matching these writers' previous behavior. A field
+ * the server response OMITS keeps its cached value until the next refetch —
+ * the callers that need deletion semantics already invalidate the detail
+ * query alongside their write.
+ */
+export function guardServerChatSnapshot(qc: QueryClient, chat: Chat, versionAtRequest: number): Chat {
+  const cached = qc.getQueryData<Chat>(chatKeys.detail(chat.id));
+  const chatStore = useChatStore.getState();
+  const fallback = chatStore.activeChat?.id === chat.id ? chatStore.activeChat : null;
+  const base = cached ?? fallback;
+  if (!base) return chat;
+  return {
+    ...chat,
+    metadata: mergeMetadataForVersion(chat.id, base.metadata, chat.metadata, versionAtRequest),
+  };
+}
+
 export function syncCachedChat(qc: QueryClient, chat: Chat) {
   const normalized = normalizeChatForCache(chat);
   qc.setQueryData<Chat>(chatKeys.detail(normalized.id), normalized);
@@ -554,6 +675,7 @@ export function useCreateChat() {
       groupId?: string | null;
       connectionId?: string | null;
       personaId?: string | null;
+      personaCharacterId?: string | null;
       promptPresetId?: string | null;
     }) => api.post<Chat>("/chats", data),
     onSuccess: (chat) => {
@@ -719,11 +841,14 @@ export function useUpdateChat() {
       connectionId?: string | null;
       promptPresetId?: string | null;
       personaId?: string | null;
+      personaCharacterId?: string | null;
       characterIds?: string[];
     }) => api.patch<Chat>(`/chats/${id}`, data),
-    onSuccess: (updatedChat, vars) => {
-      if (updatedChat) {
-        syncCachedChat(qc, updatedChat);
+    onMutate: ({ id }) => ({ metadataVersion: captureChatMetadataVersion(id) }),
+    onSuccess: (updatedChat, vars, context) => {
+      const guardedChat = updatedChat ? guardServerChatSnapshot(qc, updatedChat, context?.metadataVersion ?? 0) : null;
+      if (guardedChat) {
+        syncCachedChat(qc, guardedChat);
       }
       qc.invalidateQueries({ queryKey: chatKeys.detail(vars.id) });
       qc.invalidateQueries({ queryKey: chatKeys.list() });
@@ -731,12 +856,19 @@ export function useUpdateChat() {
         qc.invalidateQueries({ queryKey: chatKeys.messages(vars.id) });
         qc.invalidateQueries({ queryKey: chatKeys.messageCount(vars.id) });
       }
+      if (vars.personaId !== undefined || vars.personaCharacterId !== undefined) {
+        qc.invalidateQueries({ queryKey: chatKeys.messages(vars.id) });
+        qc.invalidateQueries({ queryKey: chatKeys.messageCount(vars.id) });
+        qc.invalidateQueries({ queryKey: chatKeys.messagePeek(vars.id) });
+      }
 
       // Patch the group cache so the branch selector dropdown reflects renames
-      // (and any other field changes) without waiting for a chat switch.
-      if (updatedChat?.groupId) {
-        qc.setQueryData<Chat[]>(chatKeys.group(updatedChat.groupId), (existing) =>
-          existing?.map((chat) => (chat.id === vars.id ? updatedChat : chat)),
+      // (and any other field changes) without waiting for a chat switch. Use
+      // the guarded chat — the raw snapshot would regress this cache to the
+      // stale metadata the guard just filtered out (#5641).
+      if (guardedChat?.groupId) {
+        qc.setQueryData<Chat[]>(chatKeys.group(guardedChat.groupId), (existing) =>
+          existing?.map((chat) => (chat.id === vars.id ? guardedChat : chat)),
         );
       }
       qc.invalidateQueries({ queryKey: [...chatKeys.all, "group"] });
@@ -747,8 +879,12 @@ export function useUpdateChat() {
 export function useUpdateChatMetadata() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, ...metadata }: { id: string; [key: string]: unknown }) =>
-      api.patch<Chat>(`/chats/${id}/metadata`, metadata),
+    mutationFn: ({ id, ...metadata }: { id: string; [key: string]: unknown }) => {
+      const save = () => api.patch<Chat>(`/chats/${id}/metadata`, metadata);
+      // Settings and ChatArea share this queue, including clears. Cache version
+      // guards alone cannot stop a delayed older request overwriting the server.
+      return Object.hasOwn(metadata, "background") ? trackChatMetadataSave(id, save) : save();
+    },
     onMutate: async ({ id, ...metadata }) => {
       await qc.cancelQueries({ queryKey: chatKeys.detail(id) });
       await qc.cancelQueries({ queryKey: chatKeys.list() });
@@ -785,6 +921,13 @@ export function useUpdateChatMetadata() {
           updatedAt: context.previous.updatedAt,
         });
       }
+      if (Object.hasOwn(variables, "background")) {
+        // A later failed save may have captured an earlier optimistic value.
+        // Reconcile with storage after all queued choices have settled.
+        void waitForPendingChatMetadataSaves(variables.id).then(() =>
+          qc.invalidateQueries({ queryKey: chatKeys.detail(variables.id) }),
+        );
+      }
     },
     onSuccess: (data, vars, context) => {
       if (data) {
@@ -814,9 +957,19 @@ export function useClearAutonomousUnread() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (chatId: string) => api.delete<Chat>(`/chats/${chatId}/autonomous-unread`),
-    onSuccess: (data, chatId) => {
+    onMutate: (chatId) => ({ metadataVersion: captureChatMetadataVersion(chatId) }),
+    onSuccess: (data, chatId, context) => {
       if (data) {
-        qc.setQueryData(chatKeys.detail(chatId), data);
+        const guarded = guardServerChatSnapshot(qc, data, context?.metadataVersion ?? 0);
+        // The server clears unread state by DELETING these keys, so the
+        // response omits them and the merge keeps the cached residue. Nothing
+        // client-side ever PATCHes them, so no field version can legitimately
+        // outrank their deletion — drop them explicitly.
+        const metadata = { ...(normalizeChatMetadataValue(guarded.metadata) as Record<string, unknown>) };
+        delete metadata.autonomousUnreadCount;
+        delete metadata.autonomousUnreadCharacterIds;
+        delete metadata.autonomousUnreadAt;
+        qc.setQueryData(chatKeys.detail(chatId), { ...guarded, metadata: metadata as Chat["metadata"] });
       }
       qc.invalidateQueries({ queryKey: chatKeys.list() });
     },
@@ -852,9 +1005,10 @@ function useSummaryEntryMutation() {
   return useMutation({
     mutationFn: ({ chatId, ...body }: { chatId: string } & SummaryEntryOperation) =>
       api.patch<Chat>(`/chats/${chatId}/summary-entries`, body),
-    onSuccess: (data, vars) => {
+    onMutate: ({ chatId }) => ({ metadataVersion: captureChatMetadataVersion(chatId) }),
+    onSuccess: (data, vars, context) => {
       if (data) {
-        syncCachedChat(qc, data);
+        syncCachedChat(qc, guardServerChatSnapshot(qc, data, context?.metadataVersion ?? 0));
       } else {
         qc.invalidateQueries({ queryKey: chatKeys.detail(vars.chatId) });
       }
@@ -1265,7 +1419,7 @@ export function useUpdateMessageExtra(chatId: string | null) {
   });
 }
 
-function replaceCachedMessage(
+export function replaceCachedMessage(
   old: InfiniteData<Message[]> | undefined,
   messageId: string,
   updater: (message: Message) => Message,
@@ -1421,6 +1575,7 @@ export type GenerateSummaryInput = {
   rangeEndIndex?: number;
   summaryEntryIds?: string[];
   promptTemplateId?: string | null;
+  signal?: AbortSignal;
 };
 
 export function useGenerateSummary() {
@@ -1435,6 +1590,7 @@ export function useGenerateSummary() {
       rangeEndIndex,
       summaryEntryIds,
       promptTemplateId,
+      signal,
     }: GenerateSummaryInput) =>
       api.post<{
         summary: string | null;
@@ -1443,15 +1599,19 @@ export function useGenerateSummary() {
         messageIds: string[];
         /** Subset of messageIds eligible to hide (summarized set minus the protected tail). */
         hideMessageIds: string[];
-      }>(`/chats/${chatId}/generate-summary`, {
-        contextSize,
-        rangeStartMessageId,
-        rangeEndMessageId,
-        rangeStartIndex,
-        rangeEndIndex,
-        summaryEntryIds,
-        promptTemplateId,
-      }),
+      }>(
+        `/chats/${chatId}/generate-summary`,
+        {
+          contextSize,
+          rangeStartMessageId,
+          rangeEndMessageId,
+          rangeStartIndex,
+          rangeEndIndex,
+          summaryEntryIds,
+          promptTemplateId,
+        },
+        { signal },
+      ),
     onSuccess: (data, vars) => {
       const existing = qc.getQueryData<Chat>(chatKeys.detail(vars.chatId));
       if (existing) {

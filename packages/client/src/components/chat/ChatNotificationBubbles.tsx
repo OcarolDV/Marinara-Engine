@@ -1,3 +1,5 @@
+import { isVisibleChatMode } from "../../lib/ui-visibility";
+import { useChats } from "../../hooks/use-chats";
 // ──────────────────────────────────────────────
 // Floating avatar notification bubbles
 // ──────────────────────────────────────────────
@@ -98,7 +100,10 @@ export function ChatNotificationBubbles() {
     }
   };
 
-  const notifications = Array.from(chatNotifications.values());
+  const { data: chats } = useChats();
+  const notifications = Array.from(chatNotifications.values()).filter((notification) =>
+    chats?.some((chat) => chat.id === notification.chatId && isVisibleChatMode(chat.mode)),
+  );
 
   if (notifications.length === 0) return null;
 
