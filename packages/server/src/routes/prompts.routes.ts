@@ -14,7 +14,7 @@ import {
   createChoiceBlockSchema,
   updateChoiceBlockSchema,
   createFolderEntry,
-  isStockMarinaraUniversalPreset,
+  isStockPreset,
   type LorebookEntryTimingState,
 } from "@marinara-engine/shared";
 import type { ExportEnvelope } from "@marinara-engine/shared";
@@ -33,8 +33,7 @@ import { logger } from "../lib/logger.js";
 
 const PROMPT_IMAGES_DIR = join(DATA_DIR, "prompts", "images");
 const PROMPT_IMAGE_URL_PREFIX = "/api/prompts/images/file/";
-const STOCK_PRESET_READ_ONLY_ERROR =
-  "The stock Marinara Universal preset is read-only. Open it to create an editable copy.";
+const STOCK_PRESET_READ_ONLY_ERROR = "Built-in presets are read-only. Open the preset to create an editable copy.";
 
 async function rejectStockPresetMutation(
   storage: ReturnType<typeof createPromptsStorage>,
@@ -42,7 +41,7 @@ async function rejectStockPresetMutation(
   reply: FastifyReply,
 ): Promise<boolean> {
   const preset = await storage.getById(presetId);
-  if (!preset || !isStockMarinaraUniversalPreset(preset)) return false;
+  if (!preset || !isStockPreset(preset)) return false;
   reply.status(409).send({ error: STOCK_PRESET_READ_ONLY_ERROR });
   return true;
 }
@@ -200,7 +199,7 @@ export async function promptsRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string } }>("/:id/image", async (req, reply) => {
     const preset = await storage.getById(req.params.id);
     if (!preset) return reply.status(404).send({ error: "Preset not found" });
-    if (isStockMarinaraUniversalPreset(preset)) {
+    if (isStockPreset(preset)) {
       return reply.status(409).send({ error: STOCK_PRESET_READ_ONLY_ERROR });
     }
 
@@ -230,7 +229,7 @@ export async function promptsRoutes(app: FastifyInstance) {
 
   app.delete<{ Params: { id: string } }>("/:id", async (req, reply) => {
     const preset = await storage.getById(req.params.id);
-    if (preset && isStockMarinaraUniversalPreset(preset)) {
+    if (preset && isStockPreset(preset)) {
       return reply.status(409).send({ error: STOCK_PRESET_READ_ONLY_ERROR });
     }
     await storage.remove(req.params.id);

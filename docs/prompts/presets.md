@@ -10,6 +10,38 @@ Presets shape the prompt for **Roleplay** and **Game** chats. **Conversation** m
 
 Presets do not need an API key or account. They only describe how a prompt is built. You still need a working connection to send the prompt. See [Connecting to an AI Provider](../connections/connecting-to-a-provider.md).
 
+## Built-in presets
+
+Marinara ships two presets. Both are read-only. Open one and click **Create an editable copy** when you want to change it. On startup Marinara restores the built-in version if it was changed or deleted, and keeps your edited version as a separate copy.
+
+**Marinara's Universal Preset** is the default. It is a compact base that works with most models and characters.
+
+**Freaky Frankenstein 5.4** is the community roleplay preset by dptgreg, co-authored with leovarian and ok_strategy_2420, and converted to Marinara by Pinkcone23. See the [author's hub](https://rentry.org/freaky-frankenstein-presets) and the [5.4 release post](https://www.reddit.com/r/SillyTavernAI/comments/1w49lyx/preset_update_freaky_frankenstein_54_the_second/). It is not the default; assign it to a Roleplay chat to use it.
+
+When you assign Freaky Frankenstein, the **Configure Preset Variables** window asks for these choices:
+
+- **Prose style**: Cinematic Realism or Story Mode.
+- **Point of view**: Hybrid, 3rd person, 2nd person, or 1st person.
+- **NSFW mode**: None, Realism, or Freaky.
+- **Echo handling**: Anti-parrot, Embellish, or off.
+- **Output length**: on or off. Turn it off for models that write very long replies.
+- **State tracking backend**: None, Internal States, or Agents. Internal States asks the model to keep its own state block at the end of each reply. Agents hands state tracking to Marinara's tracker agents instead.
+- **Internal States modules**: DnD Simulator, Internal Agenda, GM's Notebook, Inventory, Relationships, World Sim, Chekhov's Gun, Internal Thoughts, and the Twitter feed.
+- **Custom toggles**: NPC voice, anti-omniscient NPCs, VAD emotions, realistic NPCs, banned words, colored dialogue, pop-in graphics, combat physics, onomatopoeia, HQ NPC genesis, and the Kimi K3 prefill.
+- **Refusal handling**: none, Icebreaker only, or Icebreaker plus Post-History instructions.
+- **Chain of Thought depth**: Micro, BOLT, MAX, or off.
+- **Reasoning format**: native think tags, or Forced Internal Monologue for providers and models that do not reason natively.
+- **Extras**: the author's spare prompts, off by default.
+
+The defaults match the author's shipped configuration: BOLT, Cinematic Realism, Hybrid point of view, Freaky mode, and Internal States with six modules on. The author's guidance is that Micro is the fastest, BOLT is the balanced default, and MAX follows the rules most strictly. Fewer Internal States means faster replies. For a plain roleplay preset with no state tracking, set the backend to None and Chain of Thought to Micro.
+
+Tips for Freaky Frankenstein in Marinara:
+
+- Turn on **Use max context** in the preset's generation parameters. The author expects the full context window.
+- If colored dialogue stops working with your model, switch the custom toggle from Colored Dialogue 2.0 to the older Colored Dialogue VN.
+- The preset bundles the **FF5 Regex 3.0** suite: 25 scripts in **Presets → Regexes** that are targeted to this preset, so they run only while it is assigned. They render the Internal States dropdowns, dialogue colors and fonts, and relationship bars, and they trim older state blocks out of the prompt. Deleting one of them brings it back on the next restart. Disable it instead.
+- The built-in **Clean HTML (Outgoing Prompt)** script runs after the suite and strips HTML tags from the prompt. The model still sees the text of its previous state blocks. Disable Clean HTML if you want the model to see those blocks verbatim.
+
 ## Opening the Preset Editor
 
 Prompt presets live in the **Prompts** section of the **Presets** panel on the left side of the app. The other sections in this panel are **Regexes** and **Functions**.

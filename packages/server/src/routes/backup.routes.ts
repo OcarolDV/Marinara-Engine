@@ -27,8 +27,9 @@ import { createThemesStorage } from "../services/storage/themes.storage.js";
 import { createAppSettingsStorage } from "../services/storage/app-settings.storage.js";
 import {
   canReparentFolder,
-  isStockMarinaraUniversalPreset,
+  isStockPreset,
   MARINARA_UNIVERSAL_PRESET_SYSTEM_KEY,
+  STOCK_PRESET_SYSTEM_KEYS,
   normalizePersonalExtensionCapabilities,
   type ExportEnvelope,
 } from "@marinara-engine/shared";
@@ -770,15 +771,31 @@ export function quarantineProfileThemeRow(row: Record<string, unknown>) {
   return { ...row, isActive: "false" };
 }
 
+/** Local stock preset ids keyed by their reserved system key. */
+export type LocalStockPresetIds = Partial<Record<string, string>>;
+
+/**
+ * Keep exactly one row per stock system key after a profile import: the row
+ * that matches the local stock preset id keeps its key, and any other imported
+ * row carrying a stock key is demoted to a plain user preset.
+ */
 export function normalizeProfilePromptPresetRow(
   row: Record<string, unknown>,
-  localStockPresetId: string | null,
+  localStockPresetIds: LocalStockPresetIds | string | null,
 ): Record<string, unknown> {
-  if (localStockPresetId && row.id === localStockPresetId) {
-    return { ...row, systemKey: MARINARA_UNIVERSAL_PRESET_SYSTEM_KEY };
+  // Legacy call shape: a single id for the Universal preset.
+  const localIds: LocalStockPresetIds =
+    typeof localStockPresetIds === "string"
+      ? { [MARINARA_UNIVERSAL_PRESET_SYSTEM_KEY]: localStockPresetIds }
+      : (localStockPresetIds ?? {});
+  for (const systemKey of STOCK_PRESET_SYSTEM_KEYS) {
+    const localId = localIds[systemKey];
+    if (localId && row.id === localId) return { ...row, systemKey };
   }
-  if (!localStockPresetId || row.systemKey !== MARINARA_UNIVERSAL_PRESET_SYSTEM_KEY) return row;
-  return { ...row, systemKey: "" };
+  if (typeof row.systemKey !== "string" || !isStockPreset(row)) return row;
+  // An imported stock row with no local counterpart keeps its key only when
+  // the local profile has none for that key (nothing to collide with).
+  return localIds[row.systemKey] ? { ...row, systemKey: "" } : row;
 }
 
 // Secret-bearing columns to omit on the conflict-UPDATE path so an existing row
@@ -1253,8 +1270,12 @@ async function importProfileStorageSnapshot(
     let rollbackFailed = false;
     try {
       await app.db.transaction(async (tx) => {
-        const localStockPresetId =
-          ((await tx.select().from(schema.promptPresets)).find(isStockMarinaraUniversalPreset)?.id as string) ?? null;
+        const localStockPresetId: LocalStockPresetIds = {};
+        for (const preset of await tx.select().from(schema.promptPresets)) {
+          if (isStockPreset(preset) && typeof preset.systemKey === "string" && !localStockPresetId[preset.systemKey]) {
+            localStockPresetId[preset.systemKey] = preset.id as string;
+          }
+        }
         const plannedSnapshot = await planProfileNoodleImport(
           tx,
           snapshot,

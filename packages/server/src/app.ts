@@ -13,12 +13,13 @@ import { basicAuthHook } from "./middleware/basic-auth.js";
 import { csrfProtectionHook } from "./middleware/csrf-protection.js";
 import { rateLimitHook } from "./middleware/rate-limit.js";
 import { securityHeadersHook } from "./middleware/security-headers.js";
-import { seedDefaultPreset } from "./db/seed.js";
+import { seedDefaultPreset, seedFreakyFrankensteinPreset } from "./db/seed.js";
 import { seedProfessorMari } from "./db/seed-mari.js";
 import { seedDefaultConnection } from "./db/seed-connection.js";
 import { seedDefaultBackgrounds } from "./db/seed-backgrounds.js";
 import { seedDefaultGameAssets } from "./db/seed-game-assets.js";
 import { seedDefaultRegexScripts } from "./db/seed-regex.js";
+import { seedFreakyFrankensteinRegexScripts } from "./db/seed-freaky-frankenstein-regex.js";
 import { buildAssetManifest, ensureAssetDirs } from "./services/game/asset-manifest.service.js";
 import { recoverGalleryImages } from "./services/storage/gallery-recovery.js";
 import { migrateCharacterExtendedDescriptionsToLorebooks } from "./services/lorebook/extended-descriptions-migration.js";
@@ -163,6 +164,12 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
 
   // ── Seed defaults ──
   await seedDefaultPreset(db);
+  let freakyFrankensteinPresetId: string | null = null;
+  try {
+    freakyFrankensteinPresetId = await seedFreakyFrankensteinPreset(db);
+  } catch (error) {
+    app.log.warn(error, "Freaky Frankenstein preset seed did not complete; it will retry next startup");
+  }
   await seedProfessorMari(db);
   if (isAutoCreateDefaultConnectionDisabled()) {
     app.log.info("Skipping default OpenRouter Free connection seed because AUTO_CREATE_DEFAULT_CONNECTION is disabled");
@@ -170,6 +177,11 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
     await seedDefaultConnection(db);
   }
   await seedDefaultRegexScripts(db);
+  try {
+    await seedFreakyFrankensteinRegexScripts(db, freakyFrankensteinPresetId);
+  } catch (error) {
+    app.log.warn(error, "Freaky Frankenstein regex seed did not complete; it will retry next startup");
+  }
   await migrateLegacyDefaultAgentPrompts(db);
   await migrateCharacterExtendedDescriptionsToLorebooks(db);
   try {

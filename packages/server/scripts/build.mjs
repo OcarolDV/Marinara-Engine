@@ -55,7 +55,12 @@ async function buildLowMemoryServer() {
 
 function copyRuntimeAssets() {
   mkdirSync(resolve(DIST_DIR, "db"), { recursive: true });
-  cpSync(resolve(SRC_DIR, "db", "default-preset.json"), resolve(DIST_DIR, "db", "default-preset.json"));
+  // Bundled seed data (stock presets and their regex suites) lives next to
+  // the seed modules as JSON and must ship with the compiled output.
+  for (const file of readdirSync(resolve(SRC_DIR, "db"))) {
+    if (!file.endsWith(".json")) continue;
+    cpSync(resolve(SRC_DIR, "db", file), resolve(DIST_DIR, "db", file));
+  }
   if (existsSync(resolve(SRC_DIR, "assets"))) {
     cpSync(resolve(SRC_DIR, "assets"), resolve(DIST_DIR, "assets"), { recursive: true });
   }

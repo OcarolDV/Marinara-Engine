@@ -13,6 +13,23 @@ export function isStockMarinaraUniversalPreset(preset: { systemKey?: unknown }):
   return preset.systemKey === MARINARA_UNIVERSAL_PRESET_SYSTEM_KEY;
 }
 
+export const FREAKY_FRANKENSTEIN_PRESET_NAME = "Freaky Frankenstein 5.4";
+export const FREAKY_FRANKENSTEIN_PRESET_AUTHOR = "dptgreg, leovarian, ok_strategy_2420";
+export const FREAKY_FRANKENSTEIN_PRESET_SYSTEM_KEY = "freaky-frankenstein-preset";
+
+/** System keys of every preset the Engine ships and keeps read-only. */
+export const STOCK_PRESET_SYSTEM_KEYS = [
+  MARINARA_UNIVERSAL_PRESET_SYSTEM_KEY,
+  FREAKY_FRANKENSTEIN_PRESET_SYSTEM_KEY,
+] as const;
+
+/** True for any Engine-owned (bundled, read-only) preset. */
+export function isStockPreset(preset: { systemKey?: unknown }): boolean {
+  return (
+    typeof preset.systemKey === "string" && (STOCK_PRESET_SYSTEM_KEYS as readonly string[]).includes(preset.systemKey)
+  );
+}
+
 /** Role for a prompt section. */
 export type PromptRole = "system" | "user" | "assistant";
 
