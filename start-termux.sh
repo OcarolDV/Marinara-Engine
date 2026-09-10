@@ -243,7 +243,7 @@ load_launcher_setting() {
 # Read only settings used by this launcher. The server loads every other .env
 # value itself. Node parses these as inert dotenv data; no shell code is sourced.
 if [ -f .env ]; then
-    for setting_name in AUTO_UPDATE_ENABLED PORT HOST SSL_CERT SSL_KEY AUTO_OPEN_BROWSER DATA_DIR MARINARA_MAX_RESIDENT_CHATS; do
+    for setting_name in AUTO_UPDATE_ENABLED PORT HOST SSL_CERT SSL_KEY AUTO_OPEN_BROWSER MARINARA_BROWSER DATA_DIR MARINARA_MAX_RESIDENT_CHATS; do
         load_launcher_setting "$setting_name"
     done
 fi
@@ -650,9 +650,9 @@ echo "    Press Ctrl+C to stop"
 echo "  ══════════════════════════════════════════"
 echo ""
 
-# Open in Termux browser if available (no-op if not)
-if [ "$AUTO_OPEN_BROWSER_ENABLED" = "1" ] && command -v termux-open-url &> /dev/null; then
-    (sleep 3 && termux-open-url "${PROTOCOL}://${BROWSER_HOST}:${PORT}${LOCAL_BROWSER_PATH}") &
+# Open in Termux browser if available (no-op if not). MARINARA_BROWSER picks a specific command.
+if [ "$AUTO_OPEN_BROWSER_ENABLED" = "1" ] && { [ -n "${MARINARA_BROWSER:-}" ] || command -v termux-open-url &> /dev/null; }; then
+    (node scripts/open-browser.mjs --delay 3000 "${PROTOCOL}://${BROWSER_HOST}:${PORT}${LOCAL_BROWSER_PATH}" 2>/dev/null &)
 elif [ "$AUTO_OPEN_BROWSER_ENABLED" != "1" ]; then
     echo "  [OK] Auto-open disabled (AUTO_OPEN_BROWSER=${AUTO_OPEN_BROWSER_VALUE})"
 fi

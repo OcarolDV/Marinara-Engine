@@ -4,6 +4,8 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+- Added the `MARINARA_BROWSER` launcher setting. Set it in `.env` to a browser executable path or command (for example Brave) and the Windows, macOS/Linux, and Termux launchers open the app in that browser instead of the system default, both on a fresh start and when reopening a running instance. If the configured browser cannot be started, the launcher warns and falls back to the default browser. All launchers now share one `scripts/open-browser.mjs` helper.
+
 - Added Freaky Frankenstein 5.4 as a second built-in preset, alongside Marinara's Universal Preset. It is dptgreg's community roleplay preset (co-authored with leovarian and ok_strategy_2420) in the native Marinara conversion by Pinkcone23, refreshed to the final 5.4 release text, with the Hapuppy forced-reasoning variant folded in as a Reasoning format preset variable. The bundled FF5 Regex 3.0 suite (25 scripts) is seeded with it and targeted to the preset, so it runs only while that preset is assigned. Built-in presets are read-only; open one to create an editable copy, and startup restores the built-in version while keeping your copy. Freaky Frankenstein never becomes the default preset. A generator script (`scripts/build-freaky-frankenstein-bundle.mjs`) regenerates and verifies the bundle for future releases.
 
 - Fixed `MarinaraLauncher.exe` silently closing when opened directly on Windows. It now starts the adjacent `start.bat`; existing shortcuts keep their launch arguments.

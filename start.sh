@@ -57,7 +57,7 @@ load_launcher_setting() {
 # Read only settings used by this launcher. The server loads every other .env
 # value itself. Node parses these as inert dotenv data; no shell code is sourced.
 if [ -f .env ]; then
-    for setting_name in AUTO_UPDATE_ENABLED PORT HOST SSL_CERT SSL_KEY AUTO_OPEN_BROWSER BACKGROUNDREMOVER_AUTO_INSTALL; do
+    for setting_name in AUTO_UPDATE_ENABLED PORT HOST SSL_CERT SSL_KEY AUTO_OPEN_BROWSER MARINARA_BROWSER BACKGROUNDREMOVER_AUTO_INSTALL; do
         load_launcher_setting "$setting_name"
     done
 fi
@@ -98,7 +98,7 @@ check_launch_port() {
   if [ "$port_check_status" = "2" ]; then
     if [ "$AUTO_OPEN_BROWSER_ENABLED" = "1" ]; then
       echo "  [OK] Reopening the running Marinara Engine instance..."
-      (open "${PROTOCOL}://${BROWSER_HOST}:$PORT" 2>/dev/null || xdg-open "${PROTOCOL}://${BROWSER_HOST}:$PORT" 2>/dev/null) &
+      node scripts/open-browser.mjs "${PROTOCOL}://${BROWSER_HOST}:$PORT"
     else
       echo "  [OK] Marinara Engine is already running. Auto-open is disabled (AUTO_OPEN_BROWSER=${AUTO_OPEN_BROWSER_VALUE})"
     fi
@@ -433,9 +433,9 @@ echo "    Press Ctrl+C to stop"
 echo "  ══════════════════════════════════════════"
 echo ""
 
-# Open browser after a short delay
+# Open browser after a short delay. MARINARA_BROWSER picks a specific browser.
 if [ "$AUTO_OPEN_BROWSER_ENABLED" = "1" ]; then
-  (sleep 3 && open "${PROTOCOL}://${BROWSER_HOST}:$PORT" 2>/dev/null || xdg-open "${PROTOCOL}://${BROWSER_HOST}:$PORT" 2>/dev/null) &
+  (node scripts/open-browser.mjs --delay 3000 "${PROTOCOL}://${BROWSER_HOST}:$PORT" &)
 else
   echo "  [OK] Auto-open disabled (AUTO_OPEN_BROWSER=${AUTO_OPEN_BROWSER_VALUE})"
 fi

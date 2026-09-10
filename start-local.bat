@@ -177,7 +177,7 @@ echo  ==========================================
 echo.
 
 if defined AUTO_OPEN_BROWSER_ENABLED (
-    start "" cmd /c "timeout /t 4 /nobreak >nul && start %PROTOCOL%://%BROWSER_HOST%:%PORT% || explorer %PROTOCOL%://%BROWSER_HOST%:%PORT%"
+    start "" /b node scripts\open-browser.mjs --delay 4000 "%PROTOCOL%://%BROWSER_HOST%:%PORT%"
 ) else (
     echo  [OK] Auto-open disabled ^(AUTO_OPEN_BROWSER=%AUTO_OPEN_BROWSER%^)
 )
