@@ -1,7 +1,9 @@
 // ──────────────────────────────────────────────
-// Seed: Marinara's Universal Prompt Preset
-// Creates or refreshes Marinara's bundled universal roleplay preset.
-// Reads the exported preset JSON and imports it via the standard importer.
+// Seed: Bundled Prompt Presets
+// Creates or refreshes the presets Marinara ships with (the Universal preset
+// and Freaky Frankenstein). Each bundle is an exported preset JSON that is
+// imported via the standard importer, then tracked by two hashes so a changed
+// bundle is applied in place and user edits are preserved as an editable copy.
 // ──────────────────────────────────────────────
 import { logger } from "../lib/logger.js";
 import type { DB } from "./connection.js";
@@ -12,10 +14,12 @@ import { choiceBlocks, promptGroups, promptSections } from "./schema/index.js";
 import {
   DEFAULT_CONVERSATION_PROMPT,
   DEFAULT_GAME_SYSTEM_PROMPT,
+  FREAKY_FRANKENSTEIN_PRESET_AUTHOR,
+  FREAKY_FRANKENSTEIN_PRESET_NAME,
+  FREAKY_FRANKENSTEIN_PRESET_SYSTEM_KEY,
   MARINARA_UNIVERSAL_PRESET_AUTHOR,
   MARINARA_UNIVERSAL_PRESET_NAME,
   MARINARA_UNIVERSAL_PRESET_SYSTEM_KEY,
-  isStockMarinaraUniversalPreset,
 } from "@marinara-engine/shared";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
@@ -29,8 +33,71 @@ const __dirname = dirname(__filename);
 
 const LEGACY_MARINARA_PRESET_NAME = "Default";
 const MARINARA_PRESET_DESCRIPTION = "Marinara's universal roleplay preset. Serves as a good base.";
-const MARINARA_PRESET_SEED_HASH_KEY = "seed:marinara-universal-preset:sha256";
-const MARINARA_PRESET_SNAPSHOT_KEY = "seed:marinara-universal-preset:snapshot-sha256";
+const FREAKY_FRANKENSTEIN_PRESET_DESCRIPTION =
+  "Freaky Frankenstein 5.4: Internal States — dptgreg's community roleplay preset, converted to Marinara.";
+
+/** Describes one bundled preset and how startup reconciles it. */
+export interface BundledPresetSpec {
+  /** JSON file next to this module holding a `marinara_preset` envelope. */
+  fileName: string;
+  /** Reserved system key that marks the seeded row as Engine-owned. */
+  systemKey: string;
+  /** App-setting key that records the sha256 of the last applied bundle file. */
+  hashSettingKey: string;
+  /** App-setting key that records the content snapshot of the last applied preset. */
+  snapshotSettingKey: string;
+  fallbackName: string;
+  fallbackAuthor: string;
+  fallbackDescription: string;
+  /** Star the preset when the profile has no presets at all (Universal only). */
+  claimDefaultWhenNoPresets: boolean;
+  /** Human label for log lines. */
+  logLabel: string;
+  /**
+   * Migrations for profiles seeded before the reserved system key existed.
+   * Only the Universal preset ever shipped without one.
+   */
+  legacy?: {
+    /** Display names a pre-system-key seed may carry. */
+    names: string[];
+    author: string;
+    /** Old display name that is normalized to `fallbackName`. */
+    displayName: string;
+    /** Rewrite the legacy Conversation prompt lead sentence. */
+    migrateConversationPrompt: boolean;
+  };
+}
+
+export const MARINARA_UNIVERSAL_PRESET_SPEC: BundledPresetSpec = {
+  fileName: "default-preset.json",
+  systemKey: MARINARA_UNIVERSAL_PRESET_SYSTEM_KEY,
+  hashSettingKey: "seed:marinara-universal-preset:sha256",
+  snapshotSettingKey: "seed:marinara-universal-preset:snapshot-sha256",
+  fallbackName: MARINARA_UNIVERSAL_PRESET_NAME,
+  fallbackAuthor: MARINARA_UNIVERSAL_PRESET_AUTHOR,
+  fallbackDescription: MARINARA_PRESET_DESCRIPTION,
+  claimDefaultWhenNoPresets: true,
+  logLabel: "Marinara universal preset",
+  legacy: {
+    names: [MARINARA_UNIVERSAL_PRESET_NAME, LEGACY_MARINARA_PRESET_NAME],
+    author: MARINARA_UNIVERSAL_PRESET_AUTHOR,
+    displayName: LEGACY_MARINARA_PRESET_NAME,
+    migrateConversationPrompt: true,
+  },
+};
+
+export const FREAKY_FRANKENSTEIN_PRESET_SPEC: BundledPresetSpec = {
+  fileName: "freaky-frankenstein-preset.json",
+  systemKey: FREAKY_FRANKENSTEIN_PRESET_SYSTEM_KEY,
+  hashSettingKey: "seed:freaky-frankenstein-preset:sha256",
+  snapshotSettingKey: "seed:freaky-frankenstein-preset:snapshot-sha256",
+  fallbackName: FREAKY_FRANKENSTEIN_PRESET_NAME,
+  fallbackAuthor: FREAKY_FRANKENSTEIN_PRESET_AUTHOR,
+  fallbackDescription: FREAKY_FRANKENSTEIN_PRESET_DESCRIPTION,
+  // Freaky Frankenstein is opt-in: it never takes the default-preset star.
+  claimDefaultWhenNoPresets: false,
+  logLabel: "Freaky Frankenstein preset",
+};
 
 type BundledPresetEnvelope = {
   type: "marinara_preset";
@@ -44,8 +111,8 @@ type BundledPresetEnvelope = {
   };
 };
 
-function readBundledDefaultPreset(): { hash: string; envelope: BundledPresetEnvelope } {
-  const jsonPath = join(__dirname, "default-preset.json");
+function readBundledPreset(fileName: string): { hash: string; envelope: BundledPresetEnvelope } {
+  const jsonPath = join(__dirname, fileName);
   const raw = readFileSync(jsonPath, "utf-8");
   const envelope = JSON.parse(raw) as BundledPresetEnvelope;
   return {
@@ -133,8 +200,8 @@ function orderedStableKeys(value: unknown, keyMap: Map<string, string>): string[
     .filter((id): id is string => Boolean(id));
 }
 
-function bundledPresetDescription(envelope: BundledPresetEnvelope): string {
-  return String(envelope.data.preset.description ?? MARINARA_PRESET_DESCRIPTION);
+function bundledPresetDescription(envelope: BundledPresetEnvelope, spec: BundledPresetSpec): string {
+  return String(envelope.data.preset.description ?? spec.fallbackDescription);
 }
 
 function bundledConversationPrompt(preset: Record<string, unknown>): string {
@@ -264,20 +331,21 @@ async function applyBundledPresetToExisting(
   storage: ReturnType<typeof createPromptsStorage>,
   presetId: string,
   envelope: BundledPresetEnvelope,
+  spec: BundledPresetSpec,
 ) {
   const bundled = envelope.data;
   const preset = bundled.preset;
 
   await storage.update(presetId, {
-    name: String(preset.name ?? MARINARA_UNIVERSAL_PRESET_NAME),
-    description: String(preset.description ?? MARINARA_PRESET_DESCRIPTION),
+    name: String(preset.name ?? spec.fallbackName),
+    description: String(preset.description ?? spec.fallbackDescription),
     conversationPrompt: bundledConversationPrompt(preset),
     gamePrompt: bundledGamePrompt(preset),
     variableGroups: parseJsonField(preset.variableGroups, []),
     variableValues: parseJsonField(preset.variableValues, {}),
     parameters: parseJsonField(preset.parameters, {}),
     wrapFormat: (preset.wrapFormat as "xml" | "markdown" | "none" | undefined) ?? "xml",
-    author: String(preset.author ?? MARINARA_UNIVERSAL_PRESET_AUTHOR),
+    author: String(preset.author ?? spec.fallbackAuthor),
     defaultChoices: parseJsonField(preset.defaultChoices, {}),
   });
 
@@ -351,27 +419,31 @@ async function applyBundledPresetToExisting(
 }
 
 // ─────────────────────────────────────────────
-//  Main seed function
+//  Reconciler
 // ─────────────────────────────────────────────
-export async function seedDefaultPreset(db: DB) {
+
+/**
+ * Create or refresh one bundled preset. Returns the id of the stock preset
+ * row after reconciliation, or null when the bundle could not be imported.
+ */
+export async function reconcileBundledPreset(db: DB, spec: BundledPresetSpec): Promise<string | null> {
   const storage = createPromptsStorage(db);
   const appSettings = createAppSettingsStorage(db);
-  const bundled = readBundledDefaultPreset();
+  const bundled = readBundledPreset(spec.fileName);
 
   const existing = await storage.list();
-  const appliedHash = await appSettings.get(MARINARA_PRESET_SEED_HASH_KEY);
-  const appliedSnapshotHash = await appSettings.get(MARINARA_PRESET_SNAPSHOT_KEY);
+  const appliedHash = await appSettings.get(spec.hashSettingKey);
+  const appliedSnapshotHash = await appSettings.get(spec.snapshotSettingKey);
   const bundledSnapshotHash = computeBundledPresetSnapshotHash(bundled.envelope);
-  let existingMarinaraPreset = existing.find(isStockMarinaraUniversalPreset);
+  let existingStockPreset = existing.find((preset) => preset.systemKey === spec.systemKey);
 
   // One-time migration for presets seeded before the reserved system key
   // existed. Match immutable seed evidence rather than editable name/author
   // alone so a user preset cannot accidentally become protected stock.
-  if (!existingMarinaraPreset) {
+  if (!existingStockPreset && spec.legacy) {
+    const legacy = spec.legacy;
     const legacyCandidates = existing.filter(
-      (preset) =>
-        (preset.name === MARINARA_UNIVERSAL_PRESET_NAME || preset.name === LEGACY_MARINARA_PRESET_NAME) &&
-        preset.author === MARINARA_UNIVERSAL_PRESET_AUTHOR,
+      (preset) => legacy.names.includes(preset.name) && preset.author === legacy.author,
     );
     for (const candidate of legacyCandidates) {
       const candidateSnapshotHash = await computePresetSnapshotHash(storage, candidate.id);
@@ -379,101 +451,122 @@ export async function seedDefaultPreset(db: DB) {
         candidateSnapshotHash === bundledSnapshotHash ||
         (appliedSnapshotHash !== null && candidateSnapshotHash === appliedSnapshotHash);
       if (!matchesKnownSnapshot) continue;
-      const taggedPreset = await storage.setSystemKey(candidate.id, MARINARA_UNIVERSAL_PRESET_SYSTEM_KEY);
-      if (taggedPreset) existingMarinaraPreset = taggedPreset;
+      const taggedPreset = await storage.setSystemKey(candidate.id, spec.systemKey);
+      if (taggedPreset) existingStockPreset = taggedPreset;
       break;
     }
   }
 
   // Normalize the old display name before any reconciliation branch can
   // return, including profiles without a prior snapshot marker.
-  if (existingMarinaraPreset?.name === LEGACY_MARINARA_PRESET_NAME) {
-    const renamedPreset = await storage.update(existingMarinaraPreset.id, {
-      name: MARINARA_UNIVERSAL_PRESET_NAME,
-      description: bundledPresetDescription(bundled.envelope),
+  if (spec.legacy && existingStockPreset?.name === spec.legacy.displayName) {
+    const renamedPreset = await storage.update(existingStockPreset.id, {
+      name: spec.fallbackName,
+      description: bundledPresetDescription(bundled.envelope, spec),
     });
-    if (renamedPreset) existingMarinaraPreset = renamedPreset;
+    if (renamedPreset) existingStockPreset = renamedPreset;
   }
 
+  const migrateConversationPrompt = spec.legacy?.migrateConversationPrompt === true;
   const bundledConversationPromptValue = bundledConversationPrompt(bundled.envelope.data.preset);
-  if (existingMarinaraPreset && appliedSnapshotHash) {
-    const currentSnapshotHash = await computePresetSnapshotHash(storage, existingMarinaraPreset.id);
+  if (existingStockPreset && appliedSnapshotHash) {
+    const currentSnapshotHash = await computePresetSnapshotHash(storage, existingStockPreset.id);
     if (currentSnapshotHash && currentSnapshotHash !== appliedSnapshotHash) {
-      const wasDefault = existingMarinaraPreset.isDefault === "true";
-      const preserved = await storage.duplicate(existingMarinaraPreset.id);
-      await applyBundledPresetToExisting(db, storage, existingMarinaraPreset.id, bundled.envelope);
-      if (wasDefault) await storage.setDefault(existingMarinaraPreset.id);
-      await appSettings.set(MARINARA_PRESET_SEED_HASH_KEY, bundled.hash);
-      const nextSnapshotHash = await computePresetSnapshotHash(storage, existingMarinaraPreset.id);
-      if (nextSnapshotHash) await appSettings.set(MARINARA_PRESET_SNAPSHOT_KEY, nextSnapshotHash);
+      const wasDefault = existingStockPreset.isDefault === "true";
+      const preserved = await storage.duplicate(existingStockPreset.id);
+      await applyBundledPresetToExisting(db, storage, existingStockPreset.id, bundled.envelope, spec);
+      if (wasDefault) await storage.setDefault(existingStockPreset.id);
+      await appSettings.set(spec.hashSettingKey, bundled.hash);
+      const nextSnapshotHash = await computePresetSnapshotHash(storage, existingStockPreset.id);
+      if (nextSnapshotHash) await appSettings.set(spec.snapshotSettingKey, nextSnapshotHash);
       logger.info(
-        "[seed] Restored the stock Marinara universal preset and preserved customization as %s",
+        "[seed] Restored the stock %s and preserved customization as %s",
+        spec.logLabel,
         preserved?.name ?? "an editable copy",
       );
-      return;
+      return existingStockPreset.id;
     }
   }
 
-  if (existingMarinaraPreset && appliedHash !== bundled.hash) {
+  if (existingStockPreset && appliedHash !== bundled.hash) {
     if (!appliedSnapshotHash) {
-      const migratedConversationPrompt = await migrateExistingMarinaraConversationPrompt(
-        storage,
-        existingMarinaraPreset,
-        bundledConversationPromptValue,
-      );
-      await appSettings.set(MARINARA_PRESET_SEED_HASH_KEY, bundled.hash);
-      await appSettings.set(MARINARA_PRESET_SNAPSHOT_KEY, computeBundledPresetSnapshotHash(bundled.envelope));
+      const migratedConversationPrompt =
+        migrateConversationPrompt &&
+        (await migrateExistingMarinaraConversationPrompt(storage, existingStockPreset, bundledConversationPromptValue));
+      await appSettings.set(spec.hashSettingKey, bundled.hash);
+      await appSettings.set(spec.snapshotSettingKey, computeBundledPresetSnapshotHash(bundled.envelope));
       logger.info(
-        "[seed] Preserved existing Marinara universal preset without prior snapshot while recording bundled hash %s",
+        "[seed] Preserved existing %s without prior snapshot while recording bundled hash %s",
+        spec.logLabel,
         bundled.hash.slice(0, 12),
       );
       if (migratedConversationPrompt) {
         logger.info("[seed] Updated the legacy Marinara Conversation prompt lead sentence");
       }
-      return;
+      return existingStockPreset.id;
     }
 
-    const wasDefault = existingMarinaraPreset.isDefault === "true";
-    await applyBundledPresetToExisting(db, storage, existingMarinaraPreset.id, bundled.envelope);
-    if (wasDefault) await storage.setDefault(existingMarinaraPreset.id);
-    await appSettings.set(MARINARA_PRESET_SEED_HASH_KEY, bundled.hash);
-    const nextSnapshotHash = await computePresetSnapshotHash(storage, existingMarinaraPreset.id);
-    if (nextSnapshotHash) await appSettings.set(MARINARA_PRESET_SNAPSHOT_KEY, nextSnapshotHash);
-    logger.info("[seed] Updated bundled Marinara universal preset to %s", bundled.hash.slice(0, 12));
-    return;
+    const wasDefault = existingStockPreset.isDefault === "true";
+    await applyBundledPresetToExisting(db, storage, existingStockPreset.id, bundled.envelope, spec);
+    if (wasDefault) await storage.setDefault(existingStockPreset.id);
+    await appSettings.set(spec.hashSettingKey, bundled.hash);
+    const nextSnapshotHash = await computePresetSnapshotHash(storage, existingStockPreset.id);
+    if (nextSnapshotHash) await appSettings.set(spec.snapshotSettingKey, nextSnapshotHash);
+    logger.info("[seed] Updated bundled %s to %s", spec.logLabel, bundled.hash.slice(0, 12));
+    return existingStockPreset.id;
   }
 
   if (
-    existingMarinaraPreset &&
-    (await migrateExistingMarinaraConversationPrompt(storage, existingMarinaraPreset, bundledConversationPromptValue))
+    existingStockPreset &&
+    migrateConversationPrompt &&
+    (await migrateExistingMarinaraConversationPrompt(storage, existingStockPreset, bundledConversationPromptValue))
   ) {
     logger.info("[seed] Updated the legacy Marinara Conversation prompt lead sentence");
   }
 
-  if (existingMarinaraPreset && !appliedSnapshotHash) {
-    await appSettings.set(MARINARA_PRESET_SNAPSHOT_KEY, computeBundledPresetSnapshotHash(bundled.envelope));
+  if (existingStockPreset && !appliedSnapshotHash) {
+    await appSettings.set(spec.snapshotSettingKey, computeBundledPresetSnapshotHash(bundled.envelope));
   }
 
-  if (existingMarinaraPreset) return;
+  if (existingStockPreset) return existingStockPreset.id;
 
   // Import using the standard importer
   const result = await importMarinara(bundled.envelope, db);
   if (!result.success || result.type !== "marinara_preset") {
-    logger.error("[seed] Failed to import default preset: %j", result);
-    return;
+    logger.error("[seed] Failed to import bundled %s: %j", spec.logLabel, result);
+    return null;
   }
 
-  // The first preset becomes the default. If the stock preset is being
-  // recovered after deletion, preserve the user's current default.
+  // The first preset becomes the default (Universal only). If a stock preset
+  // is being recovered after deletion, preserve the user's current default.
   const presetId = (result as { id: string }).id;
-  if (existing.length === 0) await storage.setDefault(presetId);
-  await storage.setSystemKey(presetId, MARINARA_UNIVERSAL_PRESET_SYSTEM_KEY);
+  if (existing.length === 0 && spec.claimDefaultWhenNoPresets) await storage.setDefault(presetId);
+  await storage.setSystemKey(presetId, spec.systemKey);
+  // The importer resets generation parameters; apply the bundle's own so a
+  // fresh install matches what a later bundle refresh would install.
+  const bundledParameters = parseJsonField<Record<string, unknown>>(bundled.envelope.data.preset.parameters, {});
   await storage.update(presetId, {
     conversationPrompt: bundledConversationPrompt(bundled.envelope.data.preset),
     gamePrompt: bundledGamePrompt(bundled.envelope.data.preset),
     defaultChoices: parseJsonField(bundled.envelope.data.preset.defaultChoices, {}),
+    ...(Object.keys(bundledParameters).length > 0 ? { parameters: bundledParameters } : {}),
   });
-  await appSettings.set(MARINARA_PRESET_SEED_HASH_KEY, bundled.hash);
+  await appSettings.set(spec.hashSettingKey, bundled.hash);
   const seededSnapshotHash = await computePresetSnapshotHash(storage, presetId);
-  if (seededSnapshotHash) await appSettings.set(MARINARA_PRESET_SNAPSHOT_KEY, seededSnapshotHash);
+  if (seededSnapshotHash) await appSettings.set(spec.snapshotSettingKey, seededSnapshotHash);
+  return presetId;
+}
+
+// ─────────────────────────────────────────────
+//  Entry points
+// ─────────────────────────────────────────────
+
+/** Seed or refresh Marinara's Universal preset. */
+export async function seedDefaultPreset(db: DB) {
+  await reconcileBundledPreset(db, MARINARA_UNIVERSAL_PRESET_SPEC);
+}
+
+/** Seed or refresh the bundled Freaky Frankenstein preset. Returns its id. */
+export async function seedFreakyFrankensteinPreset(db: DB): Promise<string | null> {
+  return reconcileBundledPreset(db, FREAKY_FRANKENSTEIN_PRESET_SPEC);
 }

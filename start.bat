@@ -378,7 +378,7 @@ goto :start_server
 :existing_server
 if defined AUTO_OPEN_BROWSER_ENABLED (
     echo  [OK] Reopening the running Marinara Engine instance...
-    start "" "%PROTOCOL%://%BROWSER_HOST%:%PORT%" || explorer "%PROTOCOL%://%BROWSER_HOST%:%PORT%"
+    node scripts\open-browser.mjs "%PROTOCOL%://%BROWSER_HOST%:%PORT%"
 ) else (
     echo  [OK] Marinara Engine is already running. Auto-open is disabled ^(AUTO_OPEN_BROWSER=%AUTO_OPEN_BROWSER%^)
 )
@@ -394,9 +394,9 @@ echo    Press Ctrl+C to stop
 echo  ==========================================
 echo.
 
-:: Open browser after a short delay (use explorer.exe as fallback)
+:: Open browser after a short delay. MARINARA_BROWSER picks a specific browser.
 if defined AUTO_OPEN_BROWSER_ENABLED (
-    start "" cmd /c "timeout /t 4 /nobreak >nul && start %PROTOCOL%://%BROWSER_HOST%:%PORT% || explorer %PROTOCOL%://%BROWSER_HOST%:%PORT%"
+    start "" /b node scripts\open-browser.mjs --delay 4000 "%PROTOCOL%://%BROWSER_HOST%:%PORT%"
 ) else (
     echo  [OK] Auto-open disabled ^(AUTO_OPEN_BROWSER=%AUTO_OPEN_BROWSER%^)
 )

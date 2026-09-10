@@ -185,7 +185,7 @@ See the [Downloadable Agents Reference](docs/agents/built-in-agents.md) for mode
 
 ### Prompt Engineering
 
-Preset system with drag-and-drop prompt ordering, lorebooks with keyword triggers, an AI lorebook maker, world info inspector, regex scripts, and a macro/template system.
+Preset system with drag-and-drop prompt ordering, lorebooks with keyword triggers, an AI lorebook maker, world info inspector, regex scripts, and a macro/template system. Two presets ship built in: Marinara's Universal Preset and the community Freaky Frankenstein 5.4 preset with its regex suite. See [Built-in presets](docs/prompts/presets.md#built-in-presets).
 
 ### Local Customization
 

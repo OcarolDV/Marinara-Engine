@@ -1,0 +1,531 @@
+[
+  {
+    "id": "ff5-regex-delete-untagged-thoughts",
+    "name": "FF5 Delete - Untagged Thoughts",
+    "enabled": true,
+    "findRegex": "^\\s{0,20}([^<\\[\\s][\\s\\S]{0,30000}?)(?:\\n\\s{0,8}[-—_*]{3,}\\s{0,8}\\n|\\n{1,10})(\\[\\s{0,8}[^\\]\\n]{0,30}\\bTime\\b)",
+    "replaceString": "$2",
+    "trimStrings": [],
+    "placement": [
+      "ai_output",
+      "user_input"
+    ],
+    "flags": "gi",
+    "promptOnly": true,
+    "applyMode": "prompt",
+    "targetCharacterIds": [],
+    "targetPromptPresetIds": [],
+    "order": -1000,
+    "minDepth": null,
+    "maxDepth": null,
+    "createdAt": "2026-09-09T00:00:00.000Z",
+    "updatedAt": "2026-09-09T00:00:00.000Z"
+  },
+  {
+    "id": "ff5-regex-catch-untagged-thoughts",
+    "name": "FF5 Catch - Untagged Thoughts",
+    "enabled": true,
+    "findRegex": "^\\s{0,20}([^<\\[\\s][\\s\\S]{0,30000}?)(?:\\n\\s{0,8}[-—_*]{3,}\\s{0,8}\\n|\\n{1,10})(\\[\\s{0,8}[^\\]\\n]{0,30}\\bTime\\b)",
+    "replaceString": "<details style=\"background: rgba(147, 51, 234, 0.08); border: 1px solid rgba(147, 51, 234, 0.3); border-left: 4px solid #a855f7; border-radius: 8px; margin: 10px 0; padding: 10px 14px; font-size: 0.92em;\"><summary style=\"cursor: pointer; font-weight: bold; color: #c084fc; user-select: none;\">💭 Thoughts</summary>\n\n$1\n</details>\n\n$2",
+    "trimStrings": [
+      ""
+    ],
+    "placement": [
+      "ai_output"
+    ],
+    "flags": "gi",
+    "promptOnly": false,
+    "applyMode": "display",
+    "targetCharacterIds": [],
+    "targetPromptPresetIds": [],
+    "order": -990,
+    "minDepth": null,
+    "maxDepth": null,
+    "createdAt": "2026-09-09T00:00:00.000Z",
+    "updatedAt": "2026-09-09T00:00:00.000Z"
+  },
+  {
+    "id": "ff5-regex-ui-collapse-detail-spacing",
+    "name": "FF5 UI - Collapse Detail Spacing",
+    "enabled": true,
+    "findRegex": "<\\/details>(?:\\s|<br>|<br\\/>|<br \\/>|<p>|<p\\/>|<p \\/>|<\\/p>)+<details",
+    "replaceString": "</details><details",
+    "trimStrings": [],
+    "placement": [
+      "ai_output"
+    ],
+    "flags": "gi",
+    "promptOnly": false,
+    "applyMode": "display",
+    "targetCharacterIds": [],
+    "targetPromptPresetIds": [],
+    "order": -980,
+    "minDepth": null,
+    "maxDepth": null,
+    "createdAt": "2026-09-09T00:00:00.000Z",
+    "updatedAt": "2026-09-09T00:00:00.000Z"
+  },
+  {
+    "id": "ff5-regex-context-saver-universal",
+    "name": "FF5 - Context Saver (Universal)",
+    "enabled": true,
+    "findRegex": "(?:<!--\\s{0,8}GFX_START\\s{0,8}-->|<internal_states>)[\\s\\S]{0,50000}?(?:<!--\\s{0,8}GFX_END\\s{0,8}-->|<\\/internal_states>|$)",
+    "replaceString": "",
+    "trimStrings": [],
+    "placement": [
+      "ai_output"
+    ],
+    "flags": "gi",
+    "promptOnly": true,
+    "applyMode": "prompt",
+    "targetCharacterIds": [],
+    "targetPromptPresetIds": [],
+    "order": -970,
+    "minDepth": 2,
+    "maxDepth": null,
+    "createdAt": "2026-09-09T00:00:00.000Z",
+    "updatedAt": "2026-09-09T00:00:00.000Z"
+  },
+  {
+    "id": "ff5-regex-repair-summary-auto-close",
+    "name": "FF5 Repair - Summary Auto-Close",
+    "enabled": true,
+    "findRegex": "<summary>([^<\\n\\r]{1,100})\\n(?!\\s{0,8}<\\/summary>)",
+    "replaceString": "<summary>$1</summary>",
+    "trimStrings": [],
+    "placement": [
+      "ai_output"
+    ],
+    "flags": "gi",
+    "promptOnly": false,
+    "applyMode": "display",
+    "targetCharacterIds": [],
+    "targetPromptPresetIds": [],
+    "order": -960,
+    "minDepth": null,
+    "maxDepth": null,
+    "createdAt": "2026-09-09T00:00:00.000Z",
+    "updatedAt": "2026-09-09T00:00:00.000Z"
+  },
+  {
+    "id": "ff5-regex-repair-gfx-trailing-unfence",
+    "name": "FF5 Repair - GFX Trailing Unfence",
+    "enabled": true,
+    "findRegex": "(<!--\\s{0,8}GFX_END\\s{0,8}-->|<\\/internal_states>|<\\/details>)\\s{0,8}\\n?\\s{0,8}```",
+    "replaceString": "$1",
+    "trimStrings": [],
+    "placement": [
+      "ai_output"
+    ],
+    "flags": "gi",
+    "promptOnly": false,
+    "applyMode": "display",
+    "targetCharacterIds": [],
+    "targetPromptPresetIds": [],
+    "order": -950,
+    "minDepth": null,
+    "maxDepth": null,
+    "createdAt": "2026-09-09T00:00:00.000Z",
+    "updatedAt": "2026-09-09T00:00:00.000Z"
+  },
+  {
+    "id": "ff5-regex-repair-gfx-unfence",
+    "name": "FF5 Repair - GFX Unfence",
+    "enabled": true,
+    "findRegex": "```(?:html|xml|markdown)?\\s{0,8}\\n?\\s{0,8}(<!--\\s{0,8}GFX_START\\s{0,8}-->|<internal_states>|<details>)",
+    "replaceString": "$1",
+    "trimStrings": [],
+    "placement": [
+      "ai_output"
+    ],
+    "flags": "gi",
+    "promptOnly": false,
+    "applyMode": "display",
+    "targetCharacterIds": [],
+    "targetPromptPresetIds": [],
+    "order": -940,
+    "minDepth": null,
+    "maxDepth": null,
+    "createdAt": "2026-09-09T00:00:00.000Z",
+    "updatedAt": "2026-09-09T00:00:00.000Z"
+  },
+  {
+    "id": "ff5-regex-tremble-dialogue-regex",
+    "name": "Tremble Dialogue Regex",
+    "enabled": true,
+    "findRegex": "<\\s{0,8}(?:color\\s{0,8}:\\s{0,8})?(cyan|pink|teal|orange|gold|violet|salmon|orchid|yellow|plum)[^>]{0,120}\\btremble\\b[^>]{0,120}>([“\"][^”\"]{1,2000}?[”\"])(?:\\s{0,8}<\\s{0,8}\\/\\s{0,8}[^<>\\n\\r]{0,40}>|\\s{0,8}<\\s{0,8}\\/\\s{0,8}[a-zA-Z0-9_-]{0,24}:|\\s{0,8}(?:\\1|tremble)>)?",
+    "replaceString": "<span style=\"color:$1;letter-spacing:1.5px;opacity:0.85;font-style:italic;\">$2</span>",
+    "trimStrings": [],
+    "placement": [
+      "ai_output"
+    ],
+    "flags": "gi",
+    "promptOnly": false,
+    "applyMode": "display",
+    "targetCharacterIds": [],
+    "targetPromptPresetIds": [],
+    "order": -930,
+    "minDepth": null,
+    "maxDepth": null,
+    "createdAt": "2026-09-09T00:00:00.000Z",
+    "updatedAt": "2026-09-09T00:00:00.000Z"
+  },
+  {
+    "id": "ff5-regex-measured-dialogue-regex",
+    "name": "Measured Dialogue Regex",
+    "enabled": true,
+    "findRegex": "<\\s{0,8}(?:color\\s{0,8}:\\s{0,8})?(cyan|pink|teal|orange|gold|violet|salmon|orchid|yellow|plum)[^>]{0,120}\\bmeasured\\b[^>]{0,120}>([“\"][^”\"]{1,2000}?[”\"])(?:\\s{0,8}<\\s{0,8}\\/\\s{0,8}[^<>\\n\\r]{0,40}>|\\s{0,8}<\\s{0,8}\\/\\s{0,8}[a-zA-Z0-9_-]{0,24}:|\\s{0,8}(?:\\1|measured)>)?",
+    "replaceString": "<span style=\"color:$1;font-weight:bold;letter-spacing:0.8px;text-shadow:0 0 3px #000, 1px 1px 2px #000;\">$2</span>",
+    "trimStrings": [],
+    "placement": [
+      "ai_output"
+    ],
+    "flags": "gi",
+    "promptOnly": false,
+    "applyMode": "display",
+    "targetCharacterIds": [],
+    "targetPromptPresetIds": [],
+    "order": -920,
+    "minDepth": null,
+    "maxDepth": null,
+    "createdAt": "2026-09-09T00:00:00.000Z",
+    "updatedAt": "2026-09-09T00:00:00.000Z"
+  },
+  {
+    "id": "ff5-regex-whisper-dialogue-regex",
+    "name": "Whisper Dialogue Regex",
+    "enabled": true,
+    "findRegex": "<\\s{0,8}(?:color\\s{0,8}:\\s{0,8})?(cyan|pink|teal|orange|gold|violet|salmon|orchid|yellow|plum)[^>]{0,120}\\bwhisper\\b[^>]{0,120}>([“\"][^”\"]{1,2000}?[”\"])(?:\\s{0,8}<\\s{0,8}\\/\\s{0,8}[^<>\\n\\r]{0,40}>|\\s{0,8}<\\s{0,8}\\/\\s{0,8}[a-zA-Z0-9_-]{0,24}:|\\s{0,8}(?:\\1|whisper)>)?",
+    "replaceString": "<span style=\"color:$1;font-size:0.85em;opacity:0.75;font-style:italic;\">$2</span>",
+    "trimStrings": [],
+    "placement": [
+      "ai_output"
+    ],
+    "flags": "gi",
+    "promptOnly": false,
+    "applyMode": "display",
+    "targetCharacterIds": [],
+    "targetPromptPresetIds": [],
+    "order": -910,
+    "minDepth": null,
+    "maxDepth": null,
+    "createdAt": "2026-09-09T00:00:00.000Z",
+    "updatedAt": "2026-09-09T00:00:00.000Z"
+  },
+  {
+    "id": "ff5-regex-shout-dialogue-regex",
+    "name": "Shout Dialogue Regex",
+    "enabled": true,
+    "findRegex": "<\\s{0,8}(?:color\\s{0,8}:\\s{0,8})?(cyan|pink|teal|orange|gold|violet|salmon|orchid|yellow|plum)[^>]{0,120}\\bshout\\b[^>]{0,120}>([“\"][^”\"]{1,2000}?[”\"])(?:\\s{0,8}<\\s{0,8}\\/\\s{0,8}[^<>\\n\\r]{0,40}>|\\s{0,8}<\\s{0,8}\\/\\s{0,8}[a-zA-Z0-9_-]{0,24}:|\\s{0,8}(?:\\1|shout)>)?",
+    "replaceString": "<span style=\"color:$1;font-size:1.15em;font-weight:900;text-shadow:0 0 6px $1;\">$2</span>",
+    "trimStrings": [],
+    "placement": [
+      "ai_output"
+    ],
+    "flags": "gi",
+    "promptOnly": false,
+    "applyMode": "display",
+    "targetCharacterIds": [],
+    "targetPromptPresetIds": [],
+    "order": -900,
+    "minDepth": null,
+    "maxDepth": null,
+    "createdAt": "2026-09-09T00:00:00.000Z",
+    "updatedAt": "2026-09-09T00:00:00.000Z"
+  },
+  {
+    "id": "ff5-regex-universal-dialogue-colorizer",
+    "name": "FF5 - Universal Dialogue Colorizer",
+    "enabled": true,
+    "findRegex": "<\\s{0,8}(?:color\\s{0,8}:\\s{0,8})?(cyan|pink|teal|orange|gold|violet|salmon|orchid|yellow|plum)\\s{0,8}>([“\"][^”\"]{1,2000}?[”\"])(?:\\s{0,8}<\\s{0,8}\\/\\s{0,8}[^<>\\n\\r]{0,40}>|\\s{0,8}<\\s{0,8}\\/\\s{0,8}[a-zA-Z0-9_-]{0,24}:|\\s{0,8}\\1>)?",
+    "replaceString": "<span style=\"color:$1;\">$2</span>",
+    "trimStrings": [],
+    "placement": [
+      "ai_output"
+    ],
+    "flags": "gi",
+    "promptOnly": false,
+    "applyMode": "display",
+    "targetCharacterIds": [],
+    "targetPromptPresetIds": [],
+    "order": -890,
+    "minDepth": null,
+    "maxDepth": null,
+    "createdAt": "2026-09-09T00:00:00.000Z",
+    "updatedAt": "2026-09-09T00:00:00.000Z"
+  },
+  {
+    "id": "ff5-regex-hapuppy-delete-thoughts",
+    "name": "Hapuppy Delete Thoughts",
+    "enabled": true,
+    "findRegex": "(?:<\\s{0,8}(?:think|thinking|thought|thoughts|reasoning|internal_monologue|internal\\s+monologue)\\b[^>]{0,120}>[\\s\\S]{0,20000}?<\\s{0,8}\\/\\s{0,8}(?:think|thinking|thought|thoughts|reasoning|internal_monologue|internal\\s+monologue)[^>]{0,120}>|###\\s{0,8}(?:Internal Monologue|Reasoning|Thoughts?|Thinking)\\s{0,8}[\\s\\S]{0,20000}?###\\s{0,8}(?:Response|Output|Narrative|Final Answer)\\s{0,8})",
+    "replaceString": "",
+    "trimStrings": [],
+    "placement": [
+      "ai_output",
+      "user_input"
+    ],
+    "flags": "gi",
+    "promptOnly": true,
+    "applyMode": "prompt",
+    "targetCharacterIds": [],
+    "targetPromptPresetIds": [],
+    "order": -880,
+    "minDepth": null,
+    "maxDepth": null,
+    "createdAt": "2026-09-09T00:00:00.000Z",
+    "updatedAt": "2026-09-09T00:00:00.000Z"
+  },
+  {
+    "id": "ff5-regex-hapuppy-hide-thoughts",
+    "name": "Hapuppy Hide Thoughts",
+    "enabled": true,
+    "findRegex": "(?:<\\s{0,8}(think|thinking|thought|thoughts|reasoning|internal_monologue|internal\\s+monologue)\\b[^>]{0,120}>([\\s\\S]{0,20000}?)<\\s{0,8}\\/\\s{0,8}\\1[^>]{0,120}>|###\\s{0,8}(?:Internal Monologue|Reasoning|Thoughts?|Thinking)\\s{0,8}\\n?([\\s\\S]{0,20000}?)###\\s{0,8}(?:Response|Output|Narrative|Final Answer)\\s{0,8})",
+    "replaceString": "<details style=\"background: rgba(147, 51, 234, 0.08); border: 1px solid rgba(147, 51, 234, 0.3); border-left: 4px solid #a855f7; border-radius: 8px; margin: 10px 0; padding: 10px 14px; font-size: 0.92em;\"><summary style=\"cursor: pointer; font-weight: bold; color: #c084fc; user-select: none;\">💭 Thoughts</summary>\n\n$2$3\n</details>",
+    "trimStrings": [],
+    "placement": [
+      "ai_output"
+    ],
+    "flags": "gi",
+    "promptOnly": false,
+    "applyMode": "display",
+    "targetCharacterIds": [],
+    "targetPromptPresetIds": [],
+    "order": -870,
+    "minDepth": null,
+    "maxDepth": null,
+    "createdAt": "2026-09-09T00:00:00.000Z",
+    "updatedAt": "2026-09-09T00:00:00.000Z"
+  },
+  {
+    "id": "ff5-regex-ui-stack-bullets",
+    "name": "FF5 UI - Stack Bullets",
+    "enabled": true,
+    "findRegex": "\\n[ \\t]{0,8}[-•*][ \\t]{0,8}<b>",
+    "replaceString": "<br>- <b>",
+    "trimStrings": [],
+    "placement": [
+      "ai_output"
+    ],
+    "flags": "g",
+    "promptOnly": false,
+    "applyMode": "display",
+    "targetCharacterIds": [],
+    "targetPromptPresetIds": [],
+    "order": -860,
+    "minDepth": null,
+    "maxDepth": null,
+    "createdAt": "2026-09-09T00:00:00.000Z",
+    "updatedAt": "2026-09-09T00:00:00.000Z"
+  },
+  {
+    "id": "ff5-regex-ui-menu-master",
+    "name": "FF5 UI - Menu Master",
+    "enabled": true,
+    "findRegex": "<details>\\s{0,8}<summary>([^<]{0,200}?)(INTERNAL STATES)([^<]{0,200}?)<\\/summary>",
+    "replaceString": "<details style=\"background:rgba(20,20,30,0.4);border-radius:6px;margin:2px 0;\"><summary style=\"background:linear-gradient(90deg, #313244, #1e1e2e);padding:10px 12px;font-weight:bold;color:#cdd6f4;cursor:pointer;text-transform:uppercase;letter-spacing:1px;list-style:none;border-bottom:2px solid #89b4fa;border-radius:6px 6px 0 0;\">$1$2$3</summary>",
+    "trimStrings": [],
+    "placement": [
+      "ai_output"
+    ],
+    "flags": "gi",
+    "promptOnly": false,
+    "applyMode": "display",
+    "targetCharacterIds": [],
+    "targetPromptPresetIds": [],
+    "order": -850,
+    "minDepth": null,
+    "maxDepth": null,
+    "createdAt": "2026-09-09T00:00:00.000Z",
+    "updatedAt": "2026-09-09T00:00:00.000Z"
+  },
+  {
+    "id": "ff5-regex-ui-menu-purple",
+    "name": "FF5 UI - Menu Purple",
+    "enabled": true,
+    "findRegex": "<details>\\s{0,8}<summary>([^<]{0,200}?)(QUESTS|CHEKHOV'S GUN|CHEKHOV SEEDS|INTERNAL THOUGHTS|INV & SKILLS|INVENTORY & STATUS|GM NOTEBOOK|GM'S NOTEBOOK)([^<]{0,200}?)<\\/summary>([\\s\\S]{0,20000}?)<\\/details>",
+    "replaceString": "<details style=\"background:rgba(203,166,247,0.05);border:1px solid rgba(203,166,247,0.2);border-left:4px solid #cba6f7;margin:2px 0;border-radius:4px;\"><summary style=\"background:linear-gradient(90deg, rgba(203,166,247,0.25), transparent);padding:8px 12px;font-weight:bold;color:#cba6f7;cursor:pointer;text-transform:uppercase;letter-spacing:0.5px;list-style:none;\">$1$2$3</summary><div style=\"padding:8px 12px;\">$4</div></details>",
+    "trimStrings": [],
+    "placement": [
+      "ai_output"
+    ],
+    "flags": "gi",
+    "promptOnly": false,
+    "applyMode": "display",
+    "targetCharacterIds": [],
+    "targetPromptPresetIds": [],
+    "order": -840,
+    "minDepth": null,
+    "maxDepth": null,
+    "createdAt": "2026-09-09T00:00:00.000Z",
+    "updatedAt": "2026-09-09T00:00:00.000Z"
+  },
+  {
+    "id": "ff5-regex-ui-menu-teal",
+    "name": "FF5 UI - Menu Teal",
+    "enabled": true,
+    "findRegex": "<details>\\s{0,8}<summary>([^<]{0,200}?)(NPC AGENDAS|NPC LOCATIONS|FACTIONS|BONDS|BOND TRACKER)([^<]{0,200}?)<\\/summary>([\\s\\S]{0,20000}?)<\\/details>",
+    "replaceString": "<details style=\"background:rgba(148,226,213,0.05);border:1px solid rgba(148,226,213,0.2);border-left:4px solid #94e2d5;margin:2px 0;border-radius:4px;\"><summary style=\"background:linear-gradient(90deg, rgba(148,226,213,0.25), transparent);padding:8px 12px;font-weight:bold;color:#94e2d5;cursor:pointer;text-transform:uppercase;letter-spacing:0.5px;list-style:none;\">$1$2$3</summary><ul style=\"margin:0;padding-left:15px;\">$4</ul></details>",
+    "trimStrings": [],
+    "placement": [
+      "ai_output"
+    ],
+    "flags": "gi",
+    "promptOnly": false,
+    "applyMode": "display",
+    "targetCharacterIds": [],
+    "targetPromptPresetIds": [],
+    "order": -830,
+    "minDepth": null,
+    "maxDepth": null,
+    "createdAt": "2026-09-09T00:00:00.000Z",
+    "updatedAt": "2026-09-09T00:00:00.000Z"
+  },
+  {
+    "id": "ff5-regex-ui-menu-orange",
+    "name": "FF5 UI - Menu Orange",
+    "enabled": true,
+    "findRegex": "<details>\\s{0,8}<summary>([^<]{0,200}?)(PLOT MOMENTUM|DND TASK SIM|WORLD SIM|PHYSICS, ENGINE & WORLD)([^<]{0,200}?)<\\/summary>([\\s\\S]{0,20000}?)<\\/details>",
+    "replaceString": "<details style=\"background:rgba(250,179,135,0.05);border:1px solid rgba(250,179,135,0.2);border-left:4px solid #fab387;margin:2px 0;border-radius:4px;\"><summary style=\"background:linear-gradient(90deg, rgba(250,179,135,0.25), transparent);padding:8px 12px;font-weight:bold;color:#fab387;cursor:pointer;text-transform:uppercase;letter-spacing:0.5px;list-style:none;\">$1$2$3</summary><ul style=\"margin:0;padding-left:15px;\">$4</ul></details>",
+    "trimStrings": [],
+    "placement": [
+      "ai_output"
+    ],
+    "flags": "gi",
+    "promptOnly": false,
+    "applyMode": "display",
+    "targetCharacterIds": [],
+    "targetPromptPresetIds": [],
+    "order": -820,
+    "minDepth": null,
+    "maxDepth": null,
+    "createdAt": "2026-09-09T00:00:00.000Z",
+    "updatedAt": "2026-09-09T00:00:00.000Z"
+  },
+  {
+    "id": "ff5-regex-ui-highlights",
+    "name": "FF5 UI - Highlights",
+    "enabled": true,
+    "findRegex": "-[ \\t]{0,8}<b[^>]{0,120}?>(.{0,400}?)<\\/b>(?![ \\t]{0,8}↔)",
+    "replaceString": "- <b style=\"color:#f9e2af;font-weight:600;text-shadow:0 0 2px rgba(249,226,175,0.2);\">$1</b>",
+    "trimStrings": [],
+    "placement": [
+      "ai_output"
+    ],
+    "flags": "g",
+    "promptOnly": false,
+    "applyMode": "display",
+    "targetCharacterIds": [],
+    "targetPromptPresetIds": [],
+    "order": -810,
+    "minDepth": null,
+    "maxDepth": null,
+    "createdAt": "2026-09-09T00:00:00.000Z",
+    "updatedAt": "2026-09-09T00:00:00.000Z"
+  },
+  {
+    "id": "ff5-regex-ui-gm-notebook-highlights",
+    "name": "FF5 UI - GM Notebook Highlights",
+    "enabled": true,
+    "findRegex": "-[ \\t]{0,8}\\[([RTD])\\]",
+    "replaceString": "- <b style=\"color:#f9e2af;font-weight:600;text-shadow:0 0 2px rgba(249,226,175,0.2);\">[$1]</b>",
+    "trimStrings": [],
+    "placement": [
+      "ai_output"
+    ],
+    "flags": "g",
+    "promptOnly": false,
+    "applyMode": "display",
+    "targetCharacterIds": [],
+    "targetPromptPresetIds": [],
+    "order": -800,
+    "minDepth": null,
+    "maxDepth": null,
+    "createdAt": "2026-09-09T00:00:00.000Z",
+    "updatedAt": "2026-09-09T00:00:00.000Z"
+  },
+  {
+    "id": "ff5-regex-relationship-bars-positive",
+    "name": "FF5 - Relationship Bars (Positive)",
+    "enabled": true,
+    "findRegex": "-?[ \\t]{0,8}(?:<b[^>]{0,120}>)?\\s{0,8}([^<|↔\\n]{1,80}?)\\s{0,8}(?:<\\/b>)?\\s{0,8}↔\\s{0,8}(?:<b[^>]{0,120}>)?\\s{0,8}([^<|\\n]{1,80}?)\\s{0,8}(?:<\\/b>)?\\s{0,8}\\|\\s{0,8}BOND:\\s{0,8}(\\+?)(\\d{1,6})\\s{0,8}\\|\\s{0,8}SPARKS?:\\s{0,8}(\\d{1,6})\\s{0,8}\\|\\s{0,8}GRUDGE:\\s{0,8}(\\d{1,6})",
+    "replaceString": "<div style=\"background:rgba(24,24,37,0.8);border:1px solid #45475a;border-radius:6px;padding:15px;margin-bottom:12px;box-shadow:0 4px 10px rgba(0,0,0,0.3);\"><div style=\"text-align:center;font-size:1.1em;font-weight:bold;color:#cdd6f4;margin-bottom:12px;text-transform:uppercase;letter-spacing:1px;\">$1 <span style=\"color:#74c7ec;margin:0 8px;\">⟷</span> $2</div><div style=\"display:flex;flex-direction:column;gap:12px;\"><div style=\"display:flex;align-items:center;gap:12px;\"><span style=\"width:80px;font-weight:bold;font-size:0.85em;text-align:right;color:#a6e3a1;text-shadow:1px 1px 2px #000;\">BOND: $3$4</span><div style=\"flex-grow:1;height:14px;background:rgba(0,0,0,0.6);border-radius:7px;box-shadow:inset 0 1px 4px rgba(0,0,0,0.8);border:1px solid #313244;\"><div style=\"height:100%;border-radius:7px;background:linear-gradient(90deg,#94e2d5,#a6e3a1);box-shadow:0 0 8px rgba(166,227,161,0.5);width:min(calc($4% / 0.2), 100%);\"></div></div></div><div style=\"display:flex;align-items:center;gap:12px;\"><span style=\"width:80px;font-weight:bold;font-size:0.85em;text-align:right;color:#f5c2e7;text-shadow:1px 1px 2px #000;\">SPARKS: $5</span><div style=\"flex-grow:1;height:14px;background:rgba(0,0,0,0.6);border-radius:7px;box-shadow:inset 0 1px 4px rgba(0,0,0,0.8);border:1px solid #313244;\"><div style=\"height:100%;border-radius:7px;background:linear-gradient(90deg,#cba6f7,#f5c2e7);box-shadow:0 0 8px rgba(245,194,231,0.5);width:min(calc($5% / 0.15), 100%);\"></div></div></div><div style=\"display:flex;align-items:center;gap:12px;\"><span style=\"width:80px;font-weight:bold;font-size:0.85em;text-align:right;color:#f38ba8;text-shadow:1px 1px 2px #000;\">GRUDGE: $6</span><div style=\"flex-grow:1;height:14px;background:rgba(0,0,0,0.6);border-radius:7px;box-shadow:inset 0 1px 4px rgba(0,0,0,0.8);border:1px solid #313244;\"><div style=\"height:100%;border-radius:7px;background:linear-gradient(90deg,#eba0ac,#f38ba8);box-shadow:0 0 8px rgba(243,139,168,0.5);width:min(calc($6% / 0.1), 100%);\"></div></div></div></div></div>",
+    "trimStrings": [],
+    "placement": [
+      "ai_output"
+    ],
+    "flags": "gi",
+    "promptOnly": false,
+    "applyMode": "display",
+    "targetCharacterIds": [],
+    "targetPromptPresetIds": [],
+    "order": -790,
+    "minDepth": 0,
+    "maxDepth": null,
+    "createdAt": "2026-09-09T00:00:00.000Z",
+    "updatedAt": "2026-09-09T00:00:00.000Z"
+  },
+  {
+    "id": "ff5-regex-relationship-bars-negative",
+    "name": "FF5 - Relationship Bars (Negative)",
+    "enabled": true,
+    "findRegex": "-?[ \\t]{0,8}(?:<b[^>]{0,120}>)?\\s{0,8}([^<|↔\\n]{1,80}?)\\s{0,8}(?:<\\/b>)?\\s{0,8}↔\\s{0,8}(?:<b[^>]{0,120}>)?\\s{0,8}([^<|\\n]{1,80}?)\\s{0,8}(?:<\\/b>)?\\s{0,8}\\|\\s{0,8}BOND:\\s{0,8}(-)(\\d{1,6})\\s{0,8}\\|\\s{0,8}SPARKS?:\\s{0,8}(\\d{1,6})\\s{0,8}\\|\\s{0,8}GRUDGE:\\s{0,8}(\\d{1,6})",
+    "replaceString": "<div style=\"background:rgba(24,24,37,0.8);border:1px solid #45475a;border-radius:6px;padding:15px;margin-bottom:12px;box-shadow:0 4px 10px rgba(0,0,0,0.3);\"><div style=\"text-align:center;font-size:1.1em;font-weight:bold;color:#cdd6f4;margin-bottom:12px;text-transform:uppercase;letter-spacing:1px;\">$1 <span style=\"color:#74c7ec;margin:0 8px;\">⟷</span> $2</div><div style=\"display:flex;flex-direction:column;gap:12px;\"><div style=\"display:flex;align-items:center;gap:12px;\"><span style=\"width:80px;font-weight:bold;font-size:0.85em;text-align:right;color:#f38ba8;text-shadow:1px 1px 2px #000;\">BOND: $3$4</span><div style=\"flex-grow:1;height:14px;background:rgba(0,0,0,0.6);border-radius:7px;box-shadow:inset 0 1px 4px rgba(0,0,0,0.8);border:1px solid #313244;\"><div style=\"height:100%;border-radius:7px;background:linear-gradient(90deg,#eba0ac,#f38ba8);box-shadow:0 0 8px rgba(243,139,168,0.5);width:min(calc($4% / 0.05), 100%);\"></div></div></div><div style=\"display:flex;align-items:center;gap:12px;\"><span style=\"width:80px;font-weight:bold;font-size:0.85em;text-align:right;color:#f5c2e7;text-shadow:1px 1px 2px #000;\">SPARKS: $5</span><div style=\"flex-grow:1;height:14px;background:rgba(0,0,0,0.6);border-radius:7px;box-shadow:inset 0 1px 4px rgba(0,0,0,0.8);border:1px solid #313244;\"><div style=\"height:100%;border-radius:7px;background:linear-gradient(90deg,#cba6f7,#f5c2e7);box-shadow:0 0 8px rgba(245,194,231,0.5);width:min(calc($5% / 0.15), 100%);\"></div></div></div><div style=\"display:flex;align-items:center;gap:12px;\"><span style=\"width:80px;font-weight:bold;font-size:0.85em;text-align:right;color:#f38ba8;text-shadow:1px 1px 2px #000;\">GRUDGE: $6</span><div style=\"flex-grow:1;height:14px;background:rgba(0,0,0,0.6);border-radius:7px;box-shadow:inset 0 1px 4px rgba(0,0,0,0.8);border:1px solid #313244;\"><div style=\"height:100%;border-radius:7px;background:linear-gradient(90deg,#eba0ac,#f38ba8);box-shadow:0 0 8px rgba(243,139,168,0.5);width:min(calc($6% / 0.1), 100%);\"></div></div></div></div></div>",
+    "trimStrings": [],
+    "placement": [
+      "ai_output"
+    ],
+    "flags": "gi",
+    "promptOnly": false,
+    "applyMode": "display",
+    "targetCharacterIds": [],
+    "targetPromptPresetIds": [],
+    "order": -780,
+    "minDepth": 0,
+    "maxDepth": null,
+    "createdAt": "2026-09-09T00:00:00.000Z",
+    "updatedAt": "2026-09-09T00:00:00.000Z"
+  },
+  {
+    "id": "ff5-regex-gfx-stripper",
+    "name": "FF5 - GFX Stripper",
+    "enabled": true,
+    "findRegex": "<!-- GFX_START -->\\s{0,8}<div[^>]{0,200}?>([\\s\\S]{0,20000}?)<\\/div>\\s{0,8}<!-- GFX_END -->",
+    "replaceString": "$1",
+    "trimStrings": [],
+    "placement": [
+      "ai_output"
+    ],
+    "flags": "gi",
+    "promptOnly": true,
+    "applyMode": "prompt",
+    "targetCharacterIds": [],
+    "targetPromptPresetIds": [],
+    "order": -770,
+    "minDepth": 0,
+    "maxDepth": null,
+    "createdAt": "2026-09-09T00:00:00.000Z",
+    "updatedAt": "2026-09-09T00:00:00.000Z"
+  },
+  {
+    "id": "ff5-regex-image-prompt-stripper",
+    "name": "FF5 - Image Prompt Stripper",
+    "enabled": true,
+    "findRegex": "<!--\\s{0,8}IMG_PROMPT:[\\s\\S]{0,4000}?-->",
+    "replaceString": "",
+    "trimStrings": [],
+    "placement": [
+      "ai_output"
+    ],
+    "flags": "gi",
+    "promptOnly": true,
+    "applyMode": "prompt",
+    "targetCharacterIds": [],
+    "targetPromptPresetIds": [],
+    "order": -760,
+    "minDepth": null,
+    "maxDepth": null,
+    "createdAt": "2026-09-09T00:00:00.000Z",
+    "updatedAt": "2026-09-09T00:00:00.000Z"
+  }
+]

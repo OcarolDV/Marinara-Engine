@@ -28,6 +28,10 @@ Common uses include removing asterisks, deleting out of character notes in paren
 
 Your global regex scripts live in the **Presets** panel. Open it with the **Presets** button in the top bar, then find the section titled **Regexes**. The section note reads "Find/replace patterns applied to AI output or user input".
 
+### Built-in scripts
+
+Marinara seeds a few scripts on every profile. **Clean HTML (Outgoing Prompt)** strips HTML tags from the prompt, and **Collapse Excess Newlines** tidies displayed text. The **FF5 Regex 3.0** suite, 25 scripts whose names start with `FF5`, `Hapuppy`, or a dialogue tone, belongs to the built-in Freaky Frankenstein 5.4 preset. Those scripts are targeted to that preset, so they run only while it is assigned. See [Built-in presets](../prompts/presets.md#built-in-presets). Deleting a built-in script brings it back on the next restart. Disable it instead.
+
 Each row in the list shows:
 
 - The script name.
